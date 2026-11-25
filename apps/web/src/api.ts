@@ -58,6 +58,7 @@ export interface Evidence {
   itemId: string;
   submissionId: string | null;
   practiceId: string | null;
+  englishId?: string | null;
   score: number;
   occurredAt: number;
 }

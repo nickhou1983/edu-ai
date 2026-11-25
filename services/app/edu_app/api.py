@@ -19,6 +19,7 @@ from edu_agent.demo import demo_page
 from edu_app.assets import AssetNotFound, AssetUnavailable
 from edu_app.auth import Auth
 from edu_app.db import Evidence, Job, Page, Practice, PracticeItem, Report, Submission, new_id, now_ms
+from edu_app.english_api import english_router
 from edu_app.jobs import JOB_ERRORS, RETRYABLE_FAILURES
 from edu_app.mastery import overview
 from edu_app.queue import dispatch_loop
@@ -65,7 +66,8 @@ class LimitBody:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] not in ("POST", "PATCH"):
             return await self.app(scope, receive, send)
-        limit = MAX_PAGES * MAX_UPLOAD_BYTES + 65_536 if scope["path"] == "/api/submissions" else 16_384
+        image_upload = scope["path"] in ("/api/submissions", "/api/english/worksheets")
+        limit = MAX_PAGES * MAX_UPLOAD_BYTES + 65_536 if image_upload else 16_384
         size = 0
 
         async def limited_receive():
@@ -182,6 +184,7 @@ def build_app(runtime: Runtime) -> FastAPI:
     if settings.mode == "local":
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
     require_owner = Depends(auth.current_owner)
+    app.include_router(english_router(runtime, auth.current_owner))
 
     @app.middleware("http")
     async def no_store(request: Request, call_next):

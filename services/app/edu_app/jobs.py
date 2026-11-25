@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from edu_agent.demo import DemoImageOnly
 from edu_app.agent_client import Agent, AgentFailure
 from edu_app.assets import AssetNotFound, AssetUnavailable
-from edu_app.db import Job, Page, Practice, PracticeItem, Submission, new_id, now_ms
+from edu_app.db import EnglishRecord, Job, Page, Practice, PracticeItem, Submission, new_id, now_ms
+from edu_app.english_jobs import english_work, save_english
 from edu_app.reports import make_report, save_report
 from edu_app.runtime import Runtime
 from edu_domain.contracts import (
@@ -48,6 +49,7 @@ class Work:
     token: str
     submission_id: str | None
     practice_id: str | None
+    english_id: str | None
 
 
 @dataclass(frozen=True)
@@ -80,7 +82,7 @@ def _claim(runtime: Runtime, job_id: str | None) -> Work | None:
         job.status, job.lease_token, job.lease_until = "running", new_id(), timestamp + LEASE_MS
         job.attempts += 1
         job.error = None
-        return Work(job.id, job.lease_token, job.submission_id, job.practice_id)
+        return Work(job.id, job.lease_token, job.submission_id, job.practice_id, job.english_id)
 
 
 def _analyze(runtime: Runtime, agent: Agent, submission_id: str) -> dict:
@@ -173,7 +175,20 @@ def run_one(runtime: Runtime, agent: Agent, job_id: str | None = None) -> bool:
     work = _claim(runtime, job_id)
     if not work:
         return False
-    if work.submission_id:
+    if work.english_id:
+        try:
+            document = english_work(runtime, agent, work.english_id)
+        except AgentFailure as exc:
+            _fail(runtime, work, exc)
+            return True
+        with runtime.db.transaction() as session:
+            job = _lease(session, work)
+            if not job:
+                return True
+            record = session.get_one(EnglishRecord, work.english_id, with_for_update=True)
+            save_english(session, record, document)
+            _complete(job)
+    elif work.submission_id:
         try:
             report = _analyze(runtime, agent, work.submission_id)
         except AgentFailure as exc:

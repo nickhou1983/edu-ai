@@ -103,10 +103,30 @@ class PracticeItem(Base):
     counted: Mapped[bool] = mapped_column(default=False)
 
 
+class EnglishRecord(Base):
+    __tablename__ = "english_records"
+    __table_args__ = (
+        UniqueConstraint("owner", "digest", name="uq_english_owner_digest"),
+        Index("ix_english_owner_created", "owner", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner: Mapped[str] = mapped_column(String(80))
+    kind: Mapped[str] = mapped_column(String(16))
+    skill: Mapped[str | None] = mapped_column(String(32))
+    digest: Mapped[bytes | None] = mapped_column(LargeBinary(32))
+    document: Mapped[dict] = mapped_column(JSON_DOCUMENT)
+    created_at: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
 class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
-        CheckConstraint("(submission_id IS NULL) <> (practice_id IS NULL)", name="ck_job_one_target"),
+        CheckConstraint(
+            "(CASE WHEN submission_id IS NULL THEN 0 ELSE 1 END"
+            " + CASE WHEN practice_id IS NULL THEN 0 ELSE 1 END"
+            " + CASE WHEN english_id IS NULL THEN 0 ELSE 1 END) = 1",
+            name="ck_job_one_target",
+        ),
         CheckConstraint("status IN ('queued', 'running', 'done', 'failed')", name="ck_job_status"),
         Index("ix_job_dispatch", "status", "available_at", "dispatched_at"),
     )
@@ -116,6 +136,9 @@ class Job(Base):
     )
     practice_id: Mapped[str | None] = mapped_column(
         ForeignKey("practice_sets.id", ondelete="CASCADE"), unique=True
+    )
+    english_id: Mapped[str | None] = mapped_column(
+        ForeignKey("english_records.id", ondelete="CASCADE"), unique=True
     )
     status: Mapped[str] = mapped_column(String(16), default="queued")
     error: Mapped[str | None] = mapped_column(String(40))
@@ -142,6 +165,7 @@ class Evidence(Base):
     occurred_at: Mapped[int] = mapped_column(BigInteger)
     submission_id: Mapped[str | None] = mapped_column(ForeignKey("submissions.id", ondelete="CASCADE"))
     practice_id: Mapped[str | None] = mapped_column(ForeignKey("practice_sets.id", ondelete="CASCADE"))
+    english_id: Mapped[str | None] = mapped_column(ForeignKey("english_records.id", ondelete="CASCADE"))
 
 
 class Database:
@@ -154,7 +178,7 @@ class Database:
             options["connect_args"] = {"connect_timeout": 5}
             if settings.mode == "azure":
                 options["connect_args"]["sslmode"] = "verify-full"
-                options["connect_args"]["sslrootcert"] = "system"
+                options["connect_args"]["sslrootcert"] = "/etc/ssl/certs/ca-certificates.crt"
         self.engine = create_engine(url, **options)
         self.sqlite = self.engine.dialect.name == "sqlite"
         if self.sqlite:

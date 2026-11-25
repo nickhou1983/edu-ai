@@ -11,6 +11,7 @@ from edu_domain.contracts import (
     AgentVersion,
     AnalysisResult,
     AnalyzedItem,
+    AnalyzePage,
     GeneratePractice,
     Mark,
     PracticeResult,
@@ -129,6 +130,10 @@ def demo_practice(request: GeneratePractice) -> PracticeResult:
 
 class DemoAgent:
     def invoke(self, request: AgentRequest) -> AgentResult:
+        if not isinstance(request, (AnalyzePage, GeneratePractice)):
+            from edu_agent.english_demo import english_demo
+
+            return english_demo(request)
         if isinstance(request, GeneratePractice):
             return demo_practice(request)
         if request.image_base64 != _encoded_sample():

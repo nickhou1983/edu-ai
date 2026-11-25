@@ -439,7 +439,8 @@ def has_verified_step(problem: Verified, steps: list[str]) -> bool:
     if problem.spec.task != "solve":
         return False
     original = expression_signature("solve", problem.spec.expression)
-    for step in steps:
+    equations = [part for step in steps for part in re.split(r"\s*(?:->|=>)\s*", step)]
+    for step in equations:
         try:
             signature = expression_signature("solve", step)
             if signature == original:

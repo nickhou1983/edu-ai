@@ -4,7 +4,7 @@ import os
 from base64 import b64encode
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -159,3 +159,19 @@ def test_host_accepts_an_invocation_and_never_enables_content_recording(monkeypa
         assert call.kwargs["text"]["format"]["strict"] is True
     assert os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
     assert os.environ["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] == "false"
+
+
+def test_host_does_not_start_sdk_model_instrumentation_or_content_export(monkeypatch):
+    pytest.importorskip("azure.ai.agentserver.invocations")
+    import microsoft.opentelemetry
+
+    from edu_agent import host as agent_host
+
+    setup = Mock(side_effect=AssertionError("Automatic model instrumentation must not start"))
+    monkeypatch.setattr(microsoft.opentelemetry, "use_microsoft_opentelemetry", setup)
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://project.example.invalid")
+    monkeypatch.setenv("MODEL_DEPLOYMENT_NAME", "test-deployment")
+
+    agent_host.build_host()
+
+    setup.assert_not_called()

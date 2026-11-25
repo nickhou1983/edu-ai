@@ -74,7 +74,9 @@ def build_host(*, local: bool = False) -> InvocationAgentServerHost:
             async with project.get_openai_client(timeout=45.0, max_retries=0) as client:
                 yield MathAgent(FoundryModel(client, deployment), version)
 
-    host = InvocationAgentServerHost(configure_observability=None) if local else InvocationAgentServerHost()
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+    host = InvocationAgentServerHost(configure_observability=None)
 
     @host.invoke_handler
     async def invoke(request: Request) -> JSONResponse:

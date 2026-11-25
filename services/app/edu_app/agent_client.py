@@ -5,7 +5,19 @@ from pydantic import ValidationError
 
 from edu_agent.demo import DemoAgent
 from edu_app.config import Settings
-from edu_domain.contracts import AgentRequest, AgentResult, AnalysisResult, AnalyzePage, PracticeResult
+from edu_domain.contracts import (
+    AgentRequest,
+    AgentResult,
+    AnalysisResult,
+    AnalyzeEnglish,
+    AnalyzePage,
+    EnglishAnalysisResult,
+    EnglishFeedbackResult,
+    EnglishPracticeResult,
+    GenerateEnglish,
+    PracticeResult,
+    ReviewEnglish,
+)
 
 
 class AgentFailure(RuntimeError):
@@ -52,7 +64,14 @@ class HttpAgent:
                 "agent_unavailable",
                 retryable=response.status_code in (408, 429) or response.status_code >= 500,
             )
-        schema = AnalysisResult if isinstance(request, AnalyzePage) else PracticeResult
+        if isinstance(request, AnalyzeEnglish):
+            schema = EnglishAnalysisResult
+        elif isinstance(request, GenerateEnglish):
+            schema = EnglishPracticeResult
+        elif isinstance(request, ReviewEnglish):
+            schema = EnglishFeedbackResult
+        else:
+            schema = AnalysisResult if isinstance(request, AnalyzePage) else PracticeResult
         try:
             return schema.model_validate_json(response.content)
         except ValidationError as exc:

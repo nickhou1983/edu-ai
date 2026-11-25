@@ -97,9 +97,6 @@ class GeneratePractice(Contract):
     count: Annotated[int, Field(ge=3, le=5)]
 
 
-AgentRequest = Annotated[AnalyzePage | GeneratePractice, Field(discriminator="operation")]
-
-
 class AgentVersion(Contract):
     model: Annotated[str, Field(min_length=1, max_length=128)]
     prompt: Annotated[str, Field(min_length=1, max_length=64)]
@@ -124,4 +121,154 @@ class PracticeResult(PracticeCandidates):
     provenance: AgentVersion
 
 
-AgentResult = AnalysisResult | PracticeResult
+EnglishSkillId = Literal[
+    "english-vocabulary", "english-grammar", "english-reading",
+    "english-writing", "english-listening-text", "english-speaking-text",
+]
+ENGLISH_OBJECTIVE_SKILLS = ("english-vocabulary", "english-grammar", "english-reading")
+EnglishText = Annotated[str, Field(min_length=1, max_length=4000)]
+
+
+class EnglishPrompt(Contract):
+    skill: EnglishSkillId
+    mode: Literal["choice", "fill", "open"]
+    instruction: Annotated[str, Field(min_length=1, max_length=1000)]
+    context: Annotated[str, Field(max_length=5000)]
+    choices: Annotated[list[Annotated[str, Field(min_length=1, max_length=300)]], Field(max_length=4)]
+
+    @model_validator(mode="after")
+    def check_format(self):
+        objective = self.skill in ENGLISH_OBJECTIVE_SKILLS
+        if objective == (self.mode == "open"):
+            raise ValueError("Only vocabulary, grammar and reading support objective assessment")
+        if self.mode == "choice":
+            if len(self.choices) < 2 or len(set(self.choices)) != len(self.choices):
+                raise ValueError("Choice questions need distinct options")
+        elif self.choices:
+            raise ValueError("Non-choice questions cannot contain options")
+        if self.skill in ("english-reading", "english-listening-text") and not self.context.strip():
+            raise ValueError("Reading and listening preparation require source text")
+        return self
+
+
+class EnglishProblem(EnglishPrompt):
+    answers: Annotated[list[Annotated[str, Field(min_length=1, max_length=256)]], Field(max_length=6)]
+    explanation: Annotated[str, Field(min_length=1, max_length=1000)]
+
+    @model_validator(mode="after")
+    def check_answers(self):
+        if self.mode == "open":
+            if self.answers:
+                raise ValueError("Subjective activities must not have a scored answer key")
+        elif not self.answers or any(not answer.strip() for answer in self.answers):
+            raise ValueError("Objective questions require accepted answers")
+        if self.mode == "choice" and (
+            len(self.answers) != 1 or self.answers[0] not in list("ABCD"[:len(self.choices)])
+        ):
+            raise ValueError("Choice key must identify exactly one option")
+        return self
+
+
+class EnglishFeedback(Contract):
+    strengths: Annotated[list[Annotated[str, Field(min_length=1, max_length=500)]], Field(min_length=1, max_length=4)]
+    improvements: Annotated[list[Annotated[str, Field(min_length=1, max_length=500)]], Field(min_length=1, max_length=4)]
+    suggested_response: EnglishText
+
+
+class EnglishReadItem(Contract):
+    label: Annotated[str, Field(min_length=1, max_length=24)]
+    region: Region
+    prompt: EnglishPrompt | None
+    readable: bool
+    mark: Mark
+    answer: EnglishText | None
+
+
+class EnglishReadPage(Contract):
+    quality: Literal["readable", "unclear"]
+    items: Annotated[list[EnglishReadItem], Field(max_length=12)]
+
+
+class EnglishSolution(Contract):
+    index: Annotated[int, Field(ge=0, lt=12)]
+    unambiguous: bool
+    answers: Annotated[list[Annotated[str, Field(min_length=1, max_length=256)]], Field(max_length=6)]
+    explanation: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class EnglishSolutions(Contract):
+    solutions: Annotated[list[EnglishSolution], Field(max_length=12)]
+
+
+class EnglishReviewEntry(Contract):
+    index: Annotated[int, Field(ge=0, lt=12)]
+    feedback: EnglishFeedback
+
+
+class EnglishReviews(Contract):
+    reviews: Annotated[list[EnglishReviewEntry], Field(max_length=12)]
+
+
+class EnglishAnalyzedItem(Contract):
+    source: EnglishReadItem
+    problem: EnglishProblem | None
+    feedback: EnglishFeedback | None
+
+
+class AnalyzeEnglish(Contract):
+    version: Literal["1"]
+    operation: Literal["analyze_english"]
+    image_base64: Annotated[str, Field(min_length=4, max_length=((MAX_PAGE_BYTES + 2) // 3) * 4)]
+
+
+class GenerateEnglish(Contract):
+    version: Literal["1"]
+    operation: Literal["generate_english"]
+    skill: EnglishSkillId
+    difficulty: Difficulty
+    count: Annotated[int, Field(ge=3, le=5)]
+
+
+class ReviewEnglish(Contract):
+    version: Literal["1"]
+    operation: Literal["review_english"]
+    prompt: EnglishPrompt
+    answer: EnglishText
+
+    @model_validator(mode="after")
+    def require_subjective(self):
+        if self.prompt.mode != "open":
+            raise ValueError("AI feedback is reserved for subjective activities")
+        return self
+
+
+class EnglishAnalysisResult(Contract):
+    version: Literal["1"]
+    operation: Literal["analyze_english"]
+    quality: Literal["readable", "unclear"]
+    items: Annotated[list[EnglishAnalyzedItem], Field(max_length=12)]
+    provenance: AgentVersion
+
+
+class EnglishCandidates(Contract):
+    items: Annotated[list[EnglishProblem], Field(max_length=10)]
+
+
+class EnglishPracticeResult(EnglishCandidates):
+    version: Literal["1"]
+    operation: Literal["generate_english"]
+    provenance: AgentVersion
+
+
+class EnglishFeedbackResult(Contract):
+    version: Literal["1"]
+    operation: Literal["review_english"]
+    feedback: EnglishFeedback
+    provenance: AgentVersion
+
+
+AgentRequest = Annotated[
+    AnalyzePage | GeneratePractice | AnalyzeEnglish | GenerateEnglish | ReviewEnglish,
+    Field(discriminator="operation"),
+]
+AgentResult = AnalysisResult | PracticeResult | EnglishAnalysisResult | EnglishPracticeResult | EnglishFeedbackResult

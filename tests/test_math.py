@@ -96,3 +96,18 @@ def test_grading_distinguishes_confirmed_blank_unclear_and_work_in_progress():
     ):
         grade = grade_item(item)
         assert (grade.outcome, grade.score) == ("undetermined", None)
+
+
+@pytest.mark.parametrize(
+    "steps,expected",
+    [
+        (["2x+6=14 -> x=5"], "partial"),
+        (["2x+6=14 => x=5"], "partial"),
+        (["2x+6=16 -> x=5"], "incorrect"),
+        (["2(x+3)=14 -> x=5"], "incorrect"),
+    ],
+)
+def test_partial_credit_verifies_equations_inside_transcribed_arrow_chains(steps, expected):
+    item = demo_analysis().items[5]
+    item = item.model_copy(update={"source": item.source.model_copy(update={"steps": steps})})
+    assert grade_item(item).outcome == expected

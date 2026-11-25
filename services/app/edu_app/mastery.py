@@ -7,7 +7,7 @@ from edu_app.db import Evidence
 from edu_domain.curriculum import SKILLS
 
 
-def overview(session: Session, owner: str) -> list[dict]:
+def overview(session: Session, owner: str, curriculum=SKILLS) -> list[dict]:
     # Keep the first verified encounter with a problem, even if it appears in another upload or exercise.
     encounters = (
         select(
@@ -45,12 +45,13 @@ def overview(session: Session, owner: str) -> list[dict]:
                 "itemId": row["source_id"],
                 "submissionId": row["submission_id"],
                 "practiceId": row["practice_id"],
+                "englishId": row["english_id"],
                 "score": row["score"],
                 "occurredAt": row["occurred_at"],
             }
         )
     skills = []
-    for skill in SKILLS:
+    for skill in curriculum:
         evidence = by_skill[skill.id]
         if len(evidence) < 3:
             percent, status = None, "insufficient"

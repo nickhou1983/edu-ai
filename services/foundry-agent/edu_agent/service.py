@@ -12,6 +12,7 @@ from edu_domain.contracts import (
     AgentVersion,
     AnalysisResult,
     AnalyzedItem,
+    AnalyzePage,
     GeneratePractice,
     PracticeCandidates,
     PracticeResult,
@@ -82,6 +83,16 @@ class AgentInputError(ValueError):
     pass
 
 
+def image_url(encoded: str) -> str:
+    try:
+        image = b64decode(encoded, validate=True)
+    except Base64Error as exc:
+        raise AgentInputError("Invalid image encoding") from exc
+    if not image.startswith(b"\xff\xd8\xff") or len(image) > MAX_PAGE_BYTES:
+        raise AgentInputError("Expected one normalized JPEG page")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
 class ModelError(RuntimeError):
     def __init__(self, code: str, *, retryable: bool):
         super().__init__(code)
@@ -123,6 +134,10 @@ class MathAgent:
         return AgentVersion(model=model, prompt=PROMPT_VERSION, agent=self.version)
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
+        if not isinstance(request, (AnalyzePage, GeneratePractice)):
+            from edu_agent.english_service import EnglishAgent
+
+            return await EnglishAgent(self.model, self.version).invoke(request)
         if isinstance(request, GeneratePractice):
             candidates, model = await self.model.infer(
                 PracticeCandidates,
@@ -145,17 +160,11 @@ class MathAgent:
                 provenance=self._provenance(model),
             )
 
-        try:
-            image = b64decode(request.image_base64, validate=True)
-        except Base64Error as exc:
-            raise AgentInputError("Invalid image encoding") from exc
-        if not image.startswith(b"\xff\xd8\xff") or len(image) > MAX_PAGE_BYTES:
-            raise AgentInputError("Expected one normalized JPEG page")
         read, read_model = await self.model.infer(
             ReadPage,
             _READ,
             "Transcribe this page.",
-            image=f"data:image/jpeg;base64,{request.image_base64}",
+            image=image_url(request.image_base64),
         )
         if read.quality == "unclear" or not read.items:
             return AnalysisResult(

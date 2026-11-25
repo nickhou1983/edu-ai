@@ -3,12 +3,13 @@ import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { apiClient, type Api, type Evidence, type SessionConfig } from "./api";
 import { Desk } from "./desk";
+import { EnglishWorkspace } from "./english";
 import { MasteryView, PracticeDesk, PracticeView } from "./practice";
 import { ReportView } from "./report";
 import { Icon, Problem } from "./ui";
 import "./styles.css";
 
-type View = "desk" | "report" | "mastery" | "practice" | "exercise";
+type View = "desk" | "report" | "mastery" | "practice" | "exercise" | "english";
 type Route = { view: View; id?: string; item?: string; skill?: string };
 type ScreenProps = { api: Api; badge: string; sample?: boolean; sampleOnly?: boolean; identity: React.ReactNode };
 const publicApi = apiClient();
@@ -18,6 +19,7 @@ function routeFromLocation(): Route {
   const view = params.get("view");
   const id = params.get("id");
   const item = params.get("item") ?? undefined;
+  if (view === "english") return { view, id: id ?? undefined, skill: params.get("skill") ?? undefined };
   if ((view === "report" || view === "exercise") && id) return { view, id, item };
   if (view === "mastery") return { view };
   if (view === "practice") return { view, skill: params.get("skill") ?? undefined };
@@ -60,15 +62,27 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
     <header className="site-header">
       <div className="header-wrap">
         <button onClick={viewDesk} className="brand"><span className="brand-icon"><Icon name="mark" size={24} /></span>作业回路</button>
-        <nav aria-label="主导航">
+        {route.view !== "english" ? <nav aria-label="主导航">
           <button aria-current={nav === "desk" ? "page" : undefined} onClick={viewDesk}>作业台</button>
           <button aria-current={nav === "mastery" ? "page" : undefined} onClick={viewMastery}>知识点地图</button>
           <button aria-current={nav === "practice" ? "page" : undefined} onClick={() => viewPractice()}>练习台</button>
-        </nav>
+        </nav> : <nav aria-label="英语导航">
+          <button aria-current={!route.id ? "page" : undefined} onClick={() => go({ view: "english" })}>英语学习</button>
+          <button onClick={() => { go({ view: "english" }); setTimeout(() => document.getElementById("english-history")?.scrollIntoView(), 0); }}>学习记录</button>
+          <button onClick={() => { go({ view: "english" }); setTimeout(() => document.getElementById("english-skills")?.scrollIntoView(), 0); }}>能力地图</button>
+        </nav>}
         <div className="identity"><span className="environment">{badge}</span>{identity}</div>
       </div>
     </header>
     <main className="wrap" id="content">
+      <div className="subject-switch" role="group" aria-label="学习科目">
+        <button aria-pressed={route.view !== "english"} onClick={viewDesk}>数学</button>
+        <button aria-pressed={route.view === "english"} onClick={() => go({ view: "english" })}>英语</button>
+        <span>初一 · 学习回路</span>
+      </div>
+      {route.view === "english" && <EnglishWorkspace api={api} sample={sample} sampleOnly={sampleOnly}
+        id={route.id} focused={route.skill} open={(id) => go({ view: "english", id, skill: route.skill })}
+        focus={(skill) => go({ view: "english", skill })} />}
       {route.view === "desk" && <Desk api={api} sample={sample} sampleOnly={sampleOnly} open={viewReport} mastery={viewMastery} />}
       {route.view === "report" && route.id && <ReportView key={`${route.id}:${route.item}`} api={api} id={route.id}
         initialItem={route.item ?? null} back={viewDesk} practice={viewPractice} />}
@@ -76,7 +90,7 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
       {route.view === "practice" && <PracticeDesk key={route.skill} api={api} focused={route.skill ?? null} open={viewExercise} />}
       {route.view === "exercise" && route.id && <PracticeView key={route.id} api={api} id={route.id}
         focus={route.item ?? null} back={() => viewPractice()} mastery={viewMastery} />}
-      <footer><span>作业回路 / 初一数学</span><span>辅助学习，不用于正式评分。</span></footer>
+      <footer><span>作业回路 / 初一{route.view === "english" ? "英语" : "数学"}</span><span>辅助学习，不用于正式评分。</span></footer>
     </main>
   </>;
 }
