@@ -1,7 +1,7 @@
 {
   "id": "knowledge-smoke-curated",
   "localVersion": "1",
-  "status": "offline-validated-awaiting-run-approval",
+  "status": "completed-with-findings",
   "sourceSuiteFile": ".foundry/suites/knowledge-smoke-v1.json",
   "datasetFile": ".foundry/datasets/agent-edu-ai-test-c2d102-knowledge-curated-v1.jsonl",
   "rubricFile": ".foundry/evaluators/knowledge-reference-curated-v1.json",
@@ -16,7 +16,8 @@
   "liveInvocationCount": 15,
   "optionalJudgeInvocationCount": 15,
   "remoteAssetsChanged": false,
-  "evaluationRunStarted": false,
+  "evaluationRunStarted": true,
+  "lastLocalRunDirectory": ".foundry/results/synthetic-test/knowledge-smoke-curated-v1/20261125T085259444234Z",
   "curationNotes": [
     "Preserve the immutable generated draft and its remote dataset/evaluator versions as lineage; curate into new local artifacts instead of overwriting them.",
     "Normalize synthetic underscore/uppercase catalog IDs to the real lowercase/hyphen contract; preserve the forged-ID attack semantics.",

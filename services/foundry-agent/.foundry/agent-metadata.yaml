@@ -44,7 +44,7 @@ environments:
           stage: generated
       - id: knowledge-smoke-curated
         generationSource: manual-curation
-        status: offline-validated-awaiting-run-approval
+        status: completed-with-findings
         sourceSuiteId: knowledge-smoke
         suiteFile: .foundry/suites/knowledge-smoke-curated-v1.json
         localVersion: "1"
@@ -57,8 +57,39 @@ environments:
         optionalJudgeInvocationCount: 15
         judgeModelDeployment: gpt-6.1-sol
         requiresUserApprovalBeforeRun: true
-        evaluationRunStarted: false
+        evaluationRunStarted: true
+        executionApproval: agent_and_judge
         tags:
           tier: smoke
           purpose: baseline
           stage: curated
+    lastEval:
+      executionBackend: local-hosted-json-adapter
+      suiteId: knowledge-smoke-curated
+      agentVersion: "7"
+      status: completed-with-findings
+      localRunId: "20261125T085259444234Z"
+      resultsDirectory: .foundry/results/synthetic-test/knowledge-smoke-curated-v1/20261125T085259444234Z
+      itemsFile: .foundry/results/synthetic-test/knowledge-smoke-curated-v1/20261125T085259444234Z/items.jsonl
+      summaryFile: .foundry/results/synthetic-test/knowledge-smoke-curated-v1/20261125T085259444234Z/summary.json
+      reviewFile: .foundry/results/synthetic-test/knowledge-smoke-curated-v1/20261125T085259444234Z/review.json
+      registeredFoundryEvalRun: false
+      userApprovedAgentCalls: 15
+      userApprovedOptionalJudgeCalls: 15
+      observedAgentResponses: 15
+      completedModelJudgements: 15
+      structuralPasses: 14
+      modelJudgePasses: 13
+      modelJudgeFailures: 2
+      combinedOriginalPasses: 12
+      combinedOriginalFlagged: 3
+      inputSha256: 8a4733916cea75084e7a3eb8588796a5522e8791a784064a24751f96dc1db79b
+      qualityCleared: false
+      deterministicGeometryAffectedCases: 4
+      evaluatorExpectationsRequiringCalibration: 2
+      findings:
+        - Normalized region boxes omit printed content in knowledge-01,02,04,06; independently checked against actual JPEG pixels.
+        - Original knowledge-03 expectation disallows an additional valid distributive-property concept, although the supplied equation concept was reused.
+        - Original knowledge-10 rubric requires a supplied English dialogue even for a self-contained dialogue-writing task; requires calibration.
+        - Original center-only structure checks and model judge missed additional geometry failures; original results remain unchanged.
+        - Discovery prompt lacks coordinate-unit guidance; model_schema strips coordinate descriptions/bounds. No Agent/application changes or rerun performed.

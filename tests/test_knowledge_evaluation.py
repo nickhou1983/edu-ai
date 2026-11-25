@@ -92,8 +92,9 @@ def test_offline_preparation_validates_real_images_without_credentials_or_networ
         image = b64decode(request.image_base64, validate=True)
         assert len(image) <= MAX_PAGE_BYTES
         assert Image.open(BytesIO(image)).format == "JPEG"
-    assert manifest["evaluationRunStarted"] is False
-    assert '"networkCalls": 0' in capsys.readouterr().out
+    assert json.loads((tmp_path / evaluation.MANIFEST).read_text()) == manifest
+    output = capsys.readouterr().out
+    assert '"networkCalls": 0' in output and '"liveEvaluationRunStarted": false' in output
     denied.assert_not_called()
 
 

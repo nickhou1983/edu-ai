@@ -72,9 +72,11 @@ EDU_MODE=local .venv/bin/python -m edu_app serve --with-worker
 .venv/bin/python -m edu_agent.knowledge_evaluation validate
 ```
 
-配置来源是 Agent 根 `services/foundry-agent` 下的 `.foundry/agent-metadata.yaml`，使用手动 SDK 配置而非 azd 项目。**尚未运行正式评估或开启持续监控，正式运行需再次获得用户确认**。确认后才可执行 `run --approve-live`，可选 `--with-judge`。完整运行最多调用既有 Agent 版本 `7` 共 15 次；启用模型评分会另加最多 15 次 `gpt-6.1-sol` 调用，按实际 token 付费。工具先核对版本、启用状态及镜像摘要，不匹配即停止；失败不自动重试。
+配置来源是 Agent 根 `services/foundry-agent` 下的 `.foundry/agent-metadata.yaml`，使用手动 SDK 配置而非 azd 项目。**已获用户独立确认并完成一次真实合成评估：Agent 版本 `7` 调用 15 次，另执行 `gpt-6.1-sol` 模型评分 15 次，未开启持续监控。** 再次运行仍需独立确认，确认后才可执行 `run --approve-live`，可选 `--with-judge`。完整运行最多产生上述调用数量，按实际 token 付费。工具先核对版本、启用状态及镜像摘要，不匹配即停止；失败不自动重试。
 
 适配器直接发送 Hosted Invocations JSON 和真实 JPEG，不是通用聊天协议，也不是已注册的 Foundry 远端 Eval run。结果写入被 Git 忽略的 `.foundry/results/` 唯一子目录，包含响应、逐项检查、输入哈希和失败时的完成数量，不记录令牌或图片 base64。未启用评分时质量始终为 `not_assessed`；启用时任何违规即失败，缺失证据或跳过必要标准均为不确定，不采用生成草稿的 `0.5` 门槛。模型评分尚未校准且与被测模型同族，仍需人工复核，不是发布质量保证。本工具不修改应用数据库、权限、监控或线上部署。
+
+本次本地运行标识 `20261125T085259444234Z`：全部调用成功，原始结构检查 14/15、模型评分 13/15、两者同时通过 12/15。**这不是通用准确率，也不能据此认定质量达标。** 逐项核对实际 JPEG 后发现，4 个场景中有 5 道题的区域框未覆盖完整题干；原来的中心点检查和模型评分漏检了部分定位问题。知识点发现提示词没有说明坐标单位，发送给模型的 schema 又剥离了坐标说明及上下限，是明确的修复线索。同时，场景03的「只允许一个概念」和场景10的「写对话也必须先提供英文对话」评估期望过严，需要校准；合法的分配律知识点和自包含写作题不应直接算作产品错误。8 项实际数学参考结果通过独立复核。原始输入、评分规则及本次响应均保留，未静默改分、未重跑、未自动优化或重新部署。
 
 `apps/web` 是 React 学生端；`services/app` 是 FastAPI、队列 Worker 和数据库迁移；`services/foundry-agent` 是 Foundry Invocations 入口及本地替身；`packages/domain` 是共享契约、图片预处理、数学验证器和英语参考答案匹配规则。
 
