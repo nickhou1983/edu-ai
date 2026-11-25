@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   describeError, jsonBody, masteryNames, pending, type Api, type JobRecord, type Mastery, type Status,
 } from "./api";
-import { dateText, Empty, Problem, statusText, useRemote } from "./ui";
+import { dateText, Empty, Icon, Problem, statusText, StudyNotebook, useRemote } from "./ui";
 
 type EnglishSkill = Omit<Mastery, "status"> & { status: Mastery["status"] | "feedback_only"; hint: string };
 type Feedback = { strengths: string[]; improvements: string[]; suggested_response: string };
@@ -82,12 +82,12 @@ export function EnglishWorkspace({ api, sample, sampleOnly, id, focused, open, f
 
   return <div className="english-workspace">
     <section className="english-heading" aria-labelledby="english-title">
-      <div><p className="eyebrow section-code">ENGLISH / 初一通用 · 不绑定教材</p>
-        <h1 id="english-title"><span>把一句话，</span><br /><span>读懂、写清。</span></h1></div>
-      <div className="english-notebook">
-        <p lang="en">Read it. Try it.<br /><em>Make it yours.</em></p>
-        <span>词汇与语法 → 理解 → 表达</span>
+      <div className="english-welcome"><p className="eyebrow section-code"><Icon name="spark" size={16} />ENGLISH / 初一通用 · 不绑定教材</p>
+        <h1 id="english-title"><span>把一句话，</span><br /><span>读懂、写清。</span></h1>
+        <p className="hero-copy">从一个单词，到自己的表达。每天一点点，让英语不再陌生。</p>
+        <a className="button hero-action" href="#english-upload"><Icon name="upload" size={18} />上传英语作业<Icon name="arrow" size={17} /></a>
       </div>
+      <StudyNotebook subject="english" />
     </section>
     <p className="callout">听力与口语目前只提供文本预习和表达草稿；不播放、录制音频，也不评估发音或真实听说能力。</p>
     {sampleOnly && <p className="muted small">本地合成演示：只分析自带英语样卷；生成内容和文字反馈均为固定样例，不代表真实模型效果。</p>}

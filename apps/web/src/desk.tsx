@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { describeError, pending, type Api, type Submission } from "./api";
-import { dateText, Empty, Icon, Problem, statusText, useRemote } from "./ui";
+import { dateText, Empty, Icon, Problem, statusText, StudyNotebook, useRemote } from "./ui";
 
 const pollHistory = (entries: Submission[]) => entries.some(pending);
 
@@ -69,25 +69,24 @@ export function Desk({ api, sample, sampleOnly, open, mastery }: {
   return <>
     <section className="hero" aria-labelledby="desk-title">
       <div className="hero-message">
-        <p className="eyebrow"><span /> 初一数学 · 课后练习簿</p>
+        <p className="eyebrow"><Icon name="spark" size={16} /> 初一数学 · 课后练习簿</p>
         <h1 id="desk-title">把错题，变成<br />会做的题。</h1>
         <p className="hero-copy">拍下作业，看清哪一步还不熟。再练几道同类题，把方法变成自己的。</p>
-        <a href="#upload" className="button hero-action"><Icon name="upload" /> 上传作业</a>
-      </div>
-      <div className="hero-sketch" aria-hidden="true">
-        <div className="worksheet">
-          <span className="worksheet-kicker">草稿页 / 一元一次方程</span>
-          <div>2(x + 3) = 14</div><div>2x = 8</div><div className="underlined">x = 4</div>
-          <span className="worksheet-stamp">已核验 ✓</span>
+        <div className="hero-actions">
+          <a href="#upload" className="button hero-action"><Icon name="upload" /> 上传作业<Icon name="arrow" size={17} /></a>
+          <button className="hero-map-link" onClick={mastery}>看看知识点地图 <Icon name="arrow" size={16} /></button>
         </div>
       </div>
+      <StudyNotebook subject="math" />
     </section>
-    <div className="pathline" aria-label="学习流程">
-      <span><b>01</b> 上传题图</span><span><b>02</b> 查看批改与掌握度</span><span><b>03</b> 做针对性练习</span>
-    </div>
+    <ol className="pathline" aria-label="学习流程">
+      <li><b>01</b><span>上传题图<small>从你的作业开始</small></span></li>
+      <li><b>02</b><span>查看批改与掌握度<small>找到还不熟的地方</small></span></li>
+      <li><b>03</b><span>做针对性练习<small>把方法练成自己的</small></span></li>
+    </ol>
     <div className="desk-grid">
       <section className="panel" id="upload" aria-labelledby="upload-title">
-        <p className="eyebrow section-code">案头 · 作业上传</p>
+        <p className="eyebrow section-code"><Icon name="upload" size={16} />从这里，开启一轮学习</p>
         <h2 id="upload-title">选几张清楚的题图</h2>
         <p className="muted">拍全题目和作答区域，上传前请裁掉姓名等信息。</p>
         {sampleOnly && <p className="small callout">本地演示使用合成样卷，不会分析自行上传的题图。</p>}
@@ -121,7 +120,7 @@ export function Desk({ api, sample, sampleOnly, open, mastery }: {
         </div>
       </section>
       <aside className="panel ledger" aria-labelledby="history-title">
-        <p className="eyebrow section-code">记录 · 继续上次</p>
+        <p className="eyebrow section-code"><Icon name="book" size={16} />学习的脚印，都在这里</p>
         <h2 id="history-title">最近作业</h2>
         {history.error && <Problem retry={history.reload}>{history.error}</Problem>}
         {!history.data && !history.error && <p className="muted" role="status">正在读取记录…</p>}

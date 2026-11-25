@@ -34,7 +34,10 @@ export function Problem({ children, retry }: { children: string; retry?: () => v
 }
 
 export function Empty({ title, children }: { title: string; children: ReactNode }) {
-  return <div className="empty"><strong>{title}</strong><div>{children}</div></div>;
+  return <div className="empty">
+    <span className="empty-icon" aria-hidden="true"><Icon name="book" size={27} /></span>
+    <strong>{title}</strong><div>{children}</div>
+  </div>;
 }
 
 export function Progress({ record, type }: { record: JobRecord; type: "report" | "practice" }) {
@@ -45,16 +48,50 @@ export function Progress({ record, type }: { record: JobRecord; type: "report" |
   </div>;
 }
 
-export function Icon({ name, size = 20 }: { name: "mark" | "upload" | "arrow" | "image" | "layers"; size?: number }) {
+export function Icon({ name, size = 20 }: {
+  name: "mark" | "upload" | "arrow" | "image" | "layers" | "book" | "spark" | "map" | "pencil";
+  size?: number;
+}) {
   const line = {
     mark: <><path d="M6 3h9l4 4v14H6zM15 3v5h4"/><path d="m8.5 14 2 2 4.5-5"/></>,
     upload: <><path d="M12 16V4m-5 5 5-5 5 5M4 15v5h16v-5"/></>,
     arrow: <path d="M4 12h15m-6-6 6 6-6 6"/>,
     image: <><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m3 17 5-4 4 3 4-5 5 5"/></>,
     layers: <><path d="m12 3 9 5-9 5-9-5 9-5zm-9 9 9 5 9-5M3 16l9 5 9-5"/></>,
+    book: <><path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1v15"/><path d="M6 8h3m-3 4h3m6-4h3m-3 4h3"/></>,
+    spark: <><path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4L12 3Z"/></>,
+    map: <><path d="m3 5 6-2 6 2 6-2v16l-6 2-6-2-6 2V5Zm6-2v16m6-14v16"/></>,
+    pencil: <><path d="m5 15 10-10 4 4L9 19l-5 1 1-5Zm8-8 4 4M5 15l4 4"/><path d="m15 5 2-2a1.4 1.4 0 0 1 2 0l2 2a1.4 1.4 0 0 1 0 2l-2 2"/></>,
   }[name];
   return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none"
     stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{line}</svg>;
+}
+
+export function StudyNotebook({ subject }: { subject: "math" | "english" }) {
+  const english = subject === "english";
+  return <div className={`study-collage ${english ? "english-collage" : "math-collage"}`} aria-hidden="true">
+    <span className="study-orbit">{english ? "Aa" : "x²"}</span>
+    <span className="study-sticker sticker-top"><Icon name="spark" size={18} />
+      {english ? "多试一句，就多会一点" : "难题拆开，一步步来"}
+    </span>
+    <div className="worksheet">
+      <span className="paper-tape" />
+      <span className="worksheet-kicker">{english ? "ENGLISH NOTES / 英语小记" : "MATH NOTES / 示例草稿"}</span>
+      <div className="worksheet-lines">
+        {english ? <><div>Read it.</div><div>Try it.</div><div className="underlined">Make it yours.</div></>
+          : <><div>2(x + 3) = 14</div><div>2x + 6 = 14</div><div className="underlined">x = 4</div></>}
+      </div>
+      <span className="worksheet-stamp">{english ? "词汇 → 理解 → 表达" : "先想思路，再看答案"}</span>
+    </div>
+    <span className="collage-pencil"><Icon name="pencil" size={61} /></span>
+    <span className="study-sticker sticker-bottom"><span className="sticker-dot" />
+      {english ? "今天，也试着写一句" : "把「还不会」留在草稿里"}
+    </span>
+    <svg className="collage-scribble" width="72" height="37" viewBox="0 0 72 37" fill="none">
+      <path d="M3 28C16 1 35 6 27 23S51 34 66 8m-11 0 13-4-1 14" stroke="currentColor"
+        strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  </div>;
 }
 
 export const dateText = (timestamp: number) => new Intl.DateTimeFormat("zh-CN", {

@@ -65,26 +65,34 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
     <a className="skip-link" href="#content">跳到内容</a>
     <header className="site-header">
       <div className="header-wrap">
-        <button onClick={viewDesk} className="brand"><span className="brand-icon"><Icon name="mark" size={24} /></span>作业回路</button>
+        <button onClick={viewDesk} className="brand"><span className="brand-icon"><Icon name="book" size={25} /></span>
+          <span className="brand-wordmark">作业回路<small>把每一步，学明白</small></span>
+        </button>
         {route.view !== "english" ? <nav aria-label="主导航">
-          <button aria-current={nav === "desk" ? "page" : undefined} onClick={viewDesk}>作业台</button>
-          <button aria-current={nav === "mastery" ? "page" : undefined} onClick={viewMastery}>知识点地图</button>
-          <button aria-current={nav === "practice" ? "page" : undefined} onClick={() => viewPractice()}>练习台</button>
+          <button aria-current={nav === "desk" ? "page" : undefined} onClick={viewDesk}><Icon name="mark" size={17} />作业台</button>
+          <button aria-current={nav === "mastery" ? "page" : undefined} onClick={viewMastery}><Icon name="map" size={17} />知识点地图</button>
+          <button aria-current={nav === "practice" ? "page" : undefined} onClick={() => viewPractice()}><Icon name="pencil" size={17} />练习台</button>
         </nav> : <nav aria-label="英语导航">
           <button aria-current={!route.id ? "page" : undefined} onClick={() => go({ view: "english" })}>英语学习</button>
           <button onClick={() => { go({ view: "english" }); setTimeout(() => document.getElementById("english-history")?.scrollIntoView(), 0); }}>学习记录</button>
           <button onClick={() => { go({ view: "english" }); setTimeout(() => document.getElementById("english-skills")?.scrollIntoView(), 0); }}>能力地图</button>
         </nav>}
-        <div className="identity"><span className="environment">{badge}</span>{identity}</div>
+        <div className="identity"><span className="environment">{badge}</span>
+          <span className="identity-avatar" aria-hidden="true">学</span>{identity}
+        </div>
       </div>
     </header>
-    <main className="wrap" id="content">
+    <main className="wrap" id="content" tabIndex={-1}>
       <div className="subject-switch" role="group" aria-label="学习科目">
-        <button aria-pressed={!english} onClick={() => route.view === "knowledge" ? go({ view: "knowledge", subject: "math" }) : viewDesk()}>数学</button>
+        <button aria-pressed={!english} onClick={() => route.view === "knowledge" ? go({ view: "knowledge", subject: "math" }) : viewDesk()}>
+          <span className="subject-symbol" aria-hidden="true">π</span>数学
+        </button>
         <button aria-pressed={english} onClick={() => go(route.view === "knowledge"
-          ? { view: "knowledge", subject: "english" } : { view: "english" })}>英语</button>
-        <button aria-pressed={route.view === "knowledge"} onClick={() =>
-          go({ view: "knowledge", subject: english ? "english" : "math" })}>知识点目录</button>
+          ? { view: "knowledge", subject: "english" } : { view: "english" })}>
+          <span className="subject-symbol" aria-hidden="true">Aa</span>英语
+        </button>
+        <button className="directory-switch" aria-pressed={route.view === "knowledge"} onClick={() =>
+          go({ view: "knowledge", subject: english ? "english" : "math" })}><Icon name="layers" size={17} />知识点目录</button>
         <span>初一 · 学习回路</span>
       </div>
       {route.view === "knowledge" && <KnowledgeWorkspace key={`${route.subject}:${route.id ?? "directory"}`}
@@ -101,7 +109,9 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
       {route.view === "practice" && <PracticeDesk key={route.skill} api={api} focused={route.skill ?? null} open={viewExercise} />}
       {route.view === "exercise" && route.id && <PracticeView key={route.id} api={api} id={route.id}
         focus={route.item ?? null} back={() => viewPractice()} mastery={viewMastery} />}
-      <footer><span>作业回路 / 初一{route.view === "english" ? "英语" : "数学"}</span><span>辅助学习，不用于正式评分。</span></footer>
+      <footer><span><Icon name="book" size={16} />作业回路 / 初一{english ? "英语" : "数学"}</span>
+        <span>慢慢来，学明白更重要。<span className="footer-note">辅助学习，不用于正式评分。</span></span>
+      </footer>
     </main>
   </>;
 }

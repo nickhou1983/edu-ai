@@ -9,7 +9,7 @@ test("English uploads, objective mastery and all text-only expression modules", 
   await expect(page.getByRole("heading", { name: "英语能力地图" })).toBeVisible();
   await expect(page.getByRole("article")).toHaveCount(6);
   await expect(page.getByText("不播放、录制音频", { exact: false })).toBeVisible();
-  await page.screenshot({ path: test.info().outputPath("english-workspace.png"), fullPage: true });
+  await page.screenshot({ path: test.info().outputPath("english-workspace.png"), fullPage: true, animations: "disabled" });
 
   await page.getByRole("button", { name: "试用英语合成样卷" }).click();
   await expect(page.getByRole("heading", { name: "英语作业报告" })).toBeVisible();
@@ -86,6 +86,6 @@ test.describe("English phone layout", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       await page.evaluate(() => window.innerWidth),
     );
-    await page.screenshot({ path: test.info().outputPath("english-phone.png"), fullPage: true });
+    await page.screenshot({ path: test.info().outputPath("english-phone.png"), fullPage: true, animations: "disabled" });
   });
 });
