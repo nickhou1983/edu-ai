@@ -13,3 +13,4 @@ node_modules/
 dist/
 test-results/
 playwright-report/
+services/foundry-agent/.foundry/results/

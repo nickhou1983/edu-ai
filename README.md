@@ -61,7 +61,20 @@ EDU_MODE=local .venv/bin/python -m edu_app serve --with-worker
 
 当前 Azure Agent 使用 `gpt-6.1-sol`（`2026-09-29`），部署类型为美国 `DataZoneStandard`、30,000 TPM；保留旧 `gpt-5-mini` 模型用于回退。模型费用按实际 token 另计，容量不是费用上限。模型部署与 Agent 配置切换见[部署手册](infra/README.md#独立模型部署与-agent-切换)。
 
-`services/foundry-agent/.foundry/` 保存 `synthetic-test` 环境的评估草稿：已验证的远端合成数据集 `knowledge-smoke-985d2f3` 版本 `1.0`（15 条）和评分器 `knowledge-reference-985d2f3` 版本 `1`，以及完整本地副本。它不是已运行的质量评估，也没有独立注册远端 suite。生成内容多数是测试设计而非可直接调用的请求；需先按真实 JSON 契约整理输入、准备合成图片及适配器，并审查评分器与默认阈值。`candidate_response` 是生成服务的建议，不是线上 Agent 的实际回答。**尚未运行批量评估或开启持续监控**；这些草稿不证明模型质量达标。
+`services/foundry-agent/.foundry/` 保存 `synthetic-test` 环境的原始评估草稿：远端合成数据集 `knowledge-smoke-985d2f3` 版本 `1.0`（15 条）、评分器 `knowledge-reference-985d2f3` 版本 `1`及完整本地副本。原始生成内容多数是测试设计，`candidate_response` 只是生成服务的建议，不是线上 Agent 回答；这些原始资产保持不变，不能直接作为有效评估。
+
+另有离线校验的本地 `knowledge-smoke-curated-v1.json`：15 个实际操作请求（6 个发现、4 个生成、5 个参考反馈）、6 张规范 JPEG 和按操作适用的 6 项评分标准，通过 `sourceScenario` 对应原始场景。缺损系数、模糊题面、目录复用、注入隔离、错误 AI 参考及英语纯文字边界均有明确期望；分数与代数参考值使用独立数学验证器核对。图片中的蓝色作答是机器排版，不能证明真实手写识别能力。原始非法 ID 已转成契约允许的形式，原 `count=2` 改为最小合法值 `3`；不存在题型组合控制字段，因此题型覆盖仅供审阅。
+
+从仓库根执行以下命令只检查本地文件，不登录 Azure、不调用模型，也不会覆盖不同内容的现有图片：
+
+```bash
+.venv/bin/python -m edu_agent.knowledge_evaluation prepare
+.venv/bin/python -m edu_agent.knowledge_evaluation validate
+```
+
+配置来源是 Agent 根 `services/foundry-agent` 下的 `.foundry/agent-metadata.yaml`，使用手动 SDK 配置而非 azd 项目。**尚未运行正式评估或开启持续监控，正式运行需再次获得用户确认**。确认后才可执行 `run --approve-live`，可选 `--with-judge`。完整运行最多调用既有 Agent 版本 `7` 共 15 次；启用模型评分会另加最多 15 次 `gpt-6.1-sol` 调用，按实际 token 付费。工具先核对版本、启用状态及镜像摘要，不匹配即停止；失败不自动重试。
+
+适配器直接发送 Hosted Invocations JSON 和真实 JPEG，不是通用聊天协议，也不是已注册的 Foundry 远端 Eval run。结果写入被 Git 忽略的 `.foundry/results/` 唯一子目录，包含响应、逐项检查、输入哈希和失败时的完成数量，不记录令牌或图片 base64。未启用评分时质量始终为 `not_assessed`；启用时任何违规即失败，缺失证据或跳过必要标准均为不确定，不采用生成草稿的 `0.5` 门槛。模型评分尚未校准且与被测模型同族，仍需人工复核，不是发布质量保证。本工具不修改应用数据库、权限、监控或线上部署。
 
 `apps/web` 是 React 学生端；`services/app` 是 FastAPI、队列 Worker 和数据库迁移；`services/foundry-agent` 是 Foundry Invocations 入口及本地替身；`packages/domain` 是共享契约、图片预处理、数学验证器和英语参考答案匹配规则。
 

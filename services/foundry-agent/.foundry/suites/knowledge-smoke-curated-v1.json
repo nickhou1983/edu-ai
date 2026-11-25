@@ -1,0 +1,32 @@
+{
+  "id": "knowledge-smoke-curated",
+  "localVersion": "1",
+  "status": "offline-validated-awaiting-run-approval",
+  "sourceSuiteFile": ".foundry/suites/knowledge-smoke-v1.json",
+  "datasetFile": ".foundry/datasets/agent-edu-ai-test-c2d102-knowledge-curated-v1.jsonl",
+  "rubricFile": ".foundry/evaluators/knowledge-reference-curated-v1.json",
+  "resultsDirectory": ".foundry/results/synthetic-test/knowledge-smoke-curated-v1",
+  "projectEndpoint": "https://ai-edu-ai-test-c2d102.services.ai.azure.com/api/projects/proj-edu-ai-test-c2d102",
+  "invocationsEndpoint": "https://ai-edu-ai-test-c2d102.services.ai.azure.com/api/projects/proj-edu-ai-test-c2d102/agents/agent-edu-ai-test-c2d102/endpoint/protocols/invocations",
+  "agentName": "agent-edu-ai-test-c2d102",
+  "agentVersion": "7",
+  "agentImageDigest": "sha256:9470c54167e27a25c4b5f96fa54a610163dc61d6fa17e20dbd0da272090aa3ef",
+  "judgeModel": "gpt-6.1-sol",
+  "executionBackend": "Local Hosted JSON adapter with optional model judge, not a registered Foundry Eval run",
+  "liveInvocationCount": 15,
+  "optionalJudgeInvocationCount": 15,
+  "remoteAssetsChanged": false,
+  "evaluationRunStarted": false,
+  "curationNotes": [
+    "Preserve the immutable generated draft and its remote dataset/evaluator versions as lineage; curate into new local artifacts instead of overwriting them.",
+    "Normalize synthetic underscore/uppercase catalog IDs to the real lowercase/hyphen contract; preserve the forged-ID attack semantics.",
+    "Adapt scenario10 from count2 to count3, since GenerateKnowledge permits only3-5.",
+    "There is no trusted per-family selection field; do not add one or treat concept description as a control channel. Family coverage is advisory.",
+    "Image fixtures are normalized JPEGs. Blue machine-rendered work represents synthetic submitted work, not evidence of real-handwriting accuracy.",
+    "Response regions are normalized to0-1000, not raw fixture pixels.",
+    "Reference workflows can identify concepts outside deterministic-grader scope. Do not apply the draft objective_math_scope_boundary criterion to knowledge discovery.",
+    "Structural checks alone never establish semantic quality. The optional model judge can be wrong and is not calibrated; human review is still required.",
+    "No aggregate0.5 pass threshold; each applicable rubric criterion must be satisfied, any violation fails, missing evidence is inconclusive.",
+    "Preparation/validation is offline. Live execution requires a fresh user decision and --approve-live. No Azure resources, roles, monitoring or deployed Agent code are changed."
+  ]
+}

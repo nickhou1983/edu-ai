@@ -42,3 +42,23 @@ environments:
           tier: smoke
           purpose: baseline
           stage: generated
+      - id: knowledge-smoke-curated
+        generationSource: manual-curation
+        status: offline-validated-awaiting-run-approval
+        sourceSuiteId: knowledge-smoke
+        suiteFile: .foundry/suites/knowledge-smoke-curated-v1.json
+        localVersion: "1"
+        remoteSuiteRegistered: false
+        datasetContentPath: .foundry/datasets/agent-edu-ai-test-c2d102-knowledge-curated-v1.jsonl
+        rubricFile: .foundry/evaluators/knowledge-reference-curated-v1.json
+        fixtureDirectory: .foundry/fixtures
+        executionBackend: local-hosted-json-adapter
+        liveInvocationCount: 15
+        optionalJudgeInvocationCount: 15
+        judgeModelDeployment: gpt-6.1-sol
+        requiresUserApprovalBeforeRun: true
+        evaluationRunStarted: false
+        tags:
+          tier: smoke
+          purpose: baseline
+          stage: curated
