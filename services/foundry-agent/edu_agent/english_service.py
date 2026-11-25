@@ -40,8 +40,13 @@ prompt=null for unsupported, multipart or ambiguous questions. mark=unclear for 
 blank means confirmed no answer. Estimate regions in 0-1000 coordinates. At most 12 items."""
 _SOLVE = _BASE + """
 Independently solve the indexed printed prompts without student answers or proposed answer keys.
-Only return indexes provided. For objective items give all clearly valid short accepted answers.
-Keys for choices must be a single uppercase letter. Preserve case/punctuation where required.
+Only return indexes provided. For objective items give all clearly valid short accepted answers,
+up to 6 answers per item. If more than 6 answers could work or the answer set is open-ended,
+return unambiguous=false with answers=[] instead of enumerating or truncating alternatives.
+For mode="choice", answers must be ["A"], ["B"], ["C"] or ["D"], identifying one existing
+option. Never return the option text, word, number or a labelled phrase in answers.
+For an ambiguous choice return unambiguous=false and answers=[].
+Preserve case/punctuation where required.
 Mark unambiguous=false if context is missing, multiple options work, answers are subjective,
 or a unique/finite accepted answer set cannot be justified. Explain using the source text or rule."""
 _GENERATE = _BASE + """
@@ -50,7 +55,13 @@ Provide all source text necessary. Reading requires a short passage; listening-t
 dialogue transcript with a comprehension/retelling task; speaking-text requires a conversation
 scenario and written response task; writing requires a short composition prompt. Open activities
 have no accepted answers. Choice questions have 2-4 distinct options with exactly one valid key.
-Fill questions have a finite set of short correct answers. Vary context and answer positions.
+For mode="choice", answers MUST contain exactly one uppercase letter A, B, C or D identifying
+an existing option, for example answers=["B"]. Never put option text, a word, a number, an index,
+or a labelled phrase in answers. Put bare option text only in choices. Every option must be
+nonempty; represent a zero-article option as "no article", never as an empty string.
+Prefer choice questions for objective practice. Use fill only when the prompt or a supplied word bank
+constrains the answer to at most 6 short accepted forms; do not write unconstrained vocabulary or
+preposition blanks. Vary context and answer positions.
 Foundation uses familiar daily life and short simple sentences; standard adds connected
 sentences or inference. Do not copy textbook passages or use real people's details."""
 _REVIEW = _BASE + """
