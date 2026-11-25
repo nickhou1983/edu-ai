@@ -1,0 +1,14 @@
+{
+  "id": "azureai://accounts/ai-edu-ai-test-c2d102/projects/proj-edu-ai-test-c2d102/data/knowledge-smoke-985d2f3/versions/1.0",
+  "name": "knowledge-smoke-985d2f3",
+  "version": "1.0",
+  "type": "uri_file",
+  "tags": {
+    "data_generation_job_id": "datagen-a10cbba733d24dec8920dd5610ead296",
+    "data_generation_type": "simple_qna",
+    "evaluation_level": "turn",
+    "scenario": "evaluation"
+  },
+  "dataUri": "https://samj2ynrqednj5m.blob.core.windows.net/ai-edu-ai-d2e94408-2845-5d32-8504-25624bdb88e7",
+  "isSingleFile": true
+}

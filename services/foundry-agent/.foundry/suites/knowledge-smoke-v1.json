@@ -1,0 +1,58 @@
+{
+  "id": "knowledge-smoke",
+  "localVersion": "1",
+  "status": "generated-needs-review",
+  "remoteSuiteRegistered": false,
+  "generationSource": "synthetic",
+  "context": {
+    "agentRoot": "services/foundry-agent",
+    "environment": "synthetic-test",
+    "metadataFile": ".foundry/agent-metadata.yaml",
+    "deploymentContextSource": "manual SDK deployment and verified metadata",
+    "agentName": "agent-edu-ai-test-c2d102",
+    "agentVersion": "7",
+    "sourceCommit": "985d2f395e8bd141d012d245609fcc0833d49063"
+  },
+  "generationJobs": {
+    "dataset": "datagen-a10cbba733d24dec8920dd5610ead296",
+    "evaluator": "evaluatorgen-knowledge-reference-985d2f3-v1-a1acb7b5"
+  },
+  "dataset": {
+    "name": "knowledge-smoke-985d2f3",
+    "version": "1.0",
+    "uri": "azureai://accounts/ai-edu-ai-test-c2d102/projects/proj-edu-ai-test-c2d102/data/knowledge-smoke-985d2f3/versions/1.0",
+    "referenceFile": ".foundry/datasets/agent-edu-ai-test-c2d102-knowledge-smoke-985d2f3-v1.0.ref.json",
+    "contentFile": ".foundry/datasets/agent-edu-ai-test-c2d102-knowledge-smoke-985d2f3-v1.0.jsonl",
+    "generatedSamples": 15,
+    "rowFields": ["id", "description", "query", "candidate_response"],
+    "candidateResponseSource": "generation service proposal; not a deployed-agent observation"
+  },
+  "evaluators": [
+    {
+      "name": "knowledge-reference-985d2f3",
+      "version": "1",
+      "uri": "azureai://accounts/ai-edu-ai-test-c2d102/projects/proj-edu-ai-test-c2d102/evaluators/knowledge-reference-985d2f3/versions/1",
+      "definitionFile": ".foundry/evaluators/knowledge-reference-985d2f3-v1.json",
+      "localDefinitionFile": ".foundry/evaluators/knowledge-reference-985d2f3-v1.definition.json",
+      "generatedThreshold": 0.5,
+      "thresholdReviewed": false
+    }
+  ],
+  "execution": {
+    "runStarted": false,
+    "runApproved": false,
+    "requiresHumanReview": true,
+    "requiresHostedJsonAdapter": true,
+    "requiresSyntheticImageFixtures": true,
+    "continuousMonitoringEnabled": false
+  },
+  "reviewNotes": [
+    "Most generated queries ask for evaluation plans rather than direct educational operations. Curate the actual operation inputs against edu_domain.contracts before any run; do not treat these queries as a ready-to-run benchmark.",
+    "candidate_response values were synthesized during generation. They are neither actual Agent7 outputs nor independently verified ground truth.",
+    "Use actual rendered synthetic images and confirmed image transport for visual cases; descriptions alone do not measure OCR or visual recognition.",
+    "Apply reference-assistance no-verdict checks only to the reference workflows, not to the existing deterministic objective-grading contract.",
+    "The generated rubric threshold 0.5 requires calibration and is not an approved release criterion.",
+    "Dataset and evaluator versions were verified remotely. This is a local manifest binding those assets; no independent remote suite or evaluation run was created."
+  ],
+  "tags": {"tier": "smoke", "purpose": "baseline", "stage": "generated"}
+}

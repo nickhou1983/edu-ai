@@ -61,6 +61,8 @@ EDU_MODE=local .venv/bin/python -m edu_app serve --with-worker
 
 当前 Azure Agent 使用 `gpt-6.1-sol`（`2026-09-29`），部署类型为美国 `DataZoneStandard`、30,000 TPM；保留旧 `gpt-5-mini` 模型用于回退。模型费用按实际 token 另计，容量不是费用上限。模型部署与 Agent 配置切换见[部署手册](infra/README.md#独立模型部署与-agent-切换)。
 
+`services/foundry-agent/.foundry/` 保存 `synthetic-test` 环境的评估草稿：已验证的远端合成数据集 `knowledge-smoke-985d2f3` 版本 `1.0`（15 条）和评分器 `knowledge-reference-985d2f3` 版本 `1`，以及完整本地副本。它不是已运行的质量评估，也没有独立注册远端 suite。生成内容多数是测试设计而非可直接调用的请求；需先按真实 JSON 契约整理输入、准备合成图片及适配器，并审查评分器与默认阈值。`candidate_response` 是生成服务的建议，不是线上 Agent 的实际回答。**尚未运行批量评估或开启持续监控**；这些草稿不证明模型质量达标。
+
 `apps/web` 是 React 学生端；`services/app` 是 FastAPI、队列 Worker 和数据库迁移；`services/foundry-agent` 是 Foundry Invocations 入口及本地替身；`packages/domain` 是共享契约、图片预处理、数学验证器和英语参考答案匹配规则。
 
 ```bash
