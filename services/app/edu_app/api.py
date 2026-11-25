@@ -185,6 +185,9 @@ def build_app(runtime: Runtime) -> FastAPI:
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
     require_owner = Depends(auth.current_owner)
     app.include_router(english_router(runtime, auth.current_owner))
+    from edu_app.knowledge_api import knowledge_router
+
+    app.include_router(knowledge_router(runtime, auth))
 
     @app.middleware("http")
     async def no_store(request: Request, call_next):
@@ -209,8 +212,12 @@ def build_app(runtime: Runtime) -> FastAPI:
 
     @app.get("/api/health")
     def health():
+        from edu_app.db import KnowledgeActivity, KnowledgePoint
+
         with runtime.db.session() as session:
-            session.execute(select(Job.id).limit(0))
+            session.execute(select(Job.id, Job.knowledge_id).limit(0))
+            session.execute(select(KnowledgePoint.id).limit(0))
+            session.execute(select(KnowledgeActivity.id).limit(0))
         return {"status": "ready"}
 
     @app.get("/api/session")
@@ -275,6 +282,11 @@ def build_app(runtime: Runtime) -> FastAPI:
                     Page(submission_id=submission.id, number=index, object_key=key)
                     for index, key in enumerate(keys, 1)
                 )
+                from edu_app.knowledge import create_discovery
+
+                create_discovery(session, owner, "math", submission.id, [
+                    {"number": index, "key": key} for index, key in enumerate(keys, 1)
+                ])
                 session.flush()
                 return _submission_info(submission, job)
         except IntegrityError:

@@ -150,6 +150,9 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
                 session.flush()
                 job = Job(english_id=record.id)
                 session.add(job)
+                from edu_app.knowledge import create_discovery
+
+                create_discovery(session, owner, "english", record.id, pages)
                 session.flush()
                 return _info(record, job)
         except IntegrityError:

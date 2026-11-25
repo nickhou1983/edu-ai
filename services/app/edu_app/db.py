@@ -118,13 +118,49 @@ class EnglishRecord(Base):
     created_at: Mapped[int] = mapped_column(BigInteger, default=now_ms)
 
 
+class KnowledgePoint(Base):
+    __tablename__ = "knowledge_points"
+    __table_args__ = (
+        UniqueConstraint("subject", "normalized_title", name="uq_knowledge_subject_title"),
+        CheckConstraint("subject IN ('math', 'english')", name="ck_knowledge_subject"),
+        CheckConstraint("origin IN ('builtin', 'manual', 'discovered')", name="ck_knowledge_origin"),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(80))
+    normalized_title: Mapped[str] = mapped_column(String(160))
+    unit: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str] = mapped_column(String(600))
+    origin: Mapped[str] = mapped_column(String(16))
+    reviewed: Mapped[bool] = mapped_column(default=False)
+    created_by: Mapped[str | None] = mapped_column(String(80))
+    created_at: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
+class KnowledgeActivity(Base):
+    __tablename__ = "knowledge_activities"
+    __table_args__ = (
+        UniqueConstraint("owner", "subject", "source_id", name="uq_knowledge_discovery_source"),
+        Index("ix_knowledge_activity_owner_created", "owner", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    owner: Mapped[str] = mapped_column(String(80))
+    subject: Mapped[str] = mapped_column(String(16))
+    kind: Mapped[str] = mapped_column(String(16))
+    point_id: Mapped[str | None] = mapped_column(ForeignKey("knowledge_points.id"))
+    source_id: Mapped[str | None] = mapped_column(String(36))
+    document: Mapped[dict] = mapped_column(JSON_DOCUMENT)
+    created_at: Mapped[int] = mapped_column(BigInteger, default=now_ms)
+
+
 class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
         CheckConstraint(
             "(CASE WHEN submission_id IS NULL THEN 0 ELSE 1 END"
             " + CASE WHEN practice_id IS NULL THEN 0 ELSE 1 END"
-            " + CASE WHEN english_id IS NULL THEN 0 ELSE 1 END) = 1",
+            " + CASE WHEN english_id IS NULL THEN 0 ELSE 1 END"
+            " + CASE WHEN knowledge_id IS NULL THEN 0 ELSE 1 END) = 1",
             name="ck_job_one_target",
         ),
         CheckConstraint("status IN ('queued', 'running', 'done', 'failed')", name="ck_job_status"),
@@ -139,6 +175,9 @@ class Job(Base):
     )
     english_id: Mapped[str | None] = mapped_column(
         ForeignKey("english_records.id", ondelete="CASCADE"), unique=True
+    )
+    knowledge_id: Mapped[str | None] = mapped_column(
+        ForeignKey("knowledge_activities.id", ondelete="CASCADE"), unique=True
     )
     status: Mapped[str] = mapped_column(String(16), default="queued")
     error: Mapped[str | None] = mapped_column(String(40))

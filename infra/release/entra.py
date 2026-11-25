@@ -61,7 +61,7 @@ def redirect_uri(origin: str) -> str:
     return f"{origin}/auth-redirect.html"
 
 
-def verify_assignments(app, users):
+def verify_assignments(app, users, allowed_roles=(DEFAULT_ROLE,)):
     (sp,) = find("servicePrincipals", f"appId eq '{app['appId']}'")
     record = graph("GET", f"/servicePrincipals/{sp['id']}?$select=appRoleAssignmentRequired")
     if record["appRoleAssignmentRequired"] is not True:
@@ -71,7 +71,10 @@ def verify_assignments(app, users):
         **{"$select": "principalId,principalType,appRoleId"},
     )
     actual = {(a["principalId"], a["principalType"], a["appRoleId"]) for a in assignments}
-    if actual != {(user, "User", DEFAULT_ROLE) for user in users}:
+    if (
+        {principal for principal, _, _ in actual} != set(users)
+        or any(kind != "User" or role not in allowed_roles for _, kind, role in actual)
+    ):
         raise RuntimeError("Test enterprise application assignments do not match the two nominated users")
 
 
@@ -99,6 +102,14 @@ def release(users, uri, *, create=False):
                 "displayName": api_name,
                 "signInAudience": "AzureADMyOrg",
                 "api": {"requestedAccessTokenVersion": 2, "oauth2PermissionScopes": [scope]},
+                "appRoles": [
+                    {
+                        "id": str(uuid4()), "value": value, "displayName": value,
+                        "description": "Maintain the shared Edu AI knowledge directory.",
+                        "isEnabled": True, "allowedMemberTypes": ["User"],
+                    }
+                    for value in ("Teacher", "Admin")
+                ],
             },
         )
         api_object, api_client = api["id"], api["appId"]
@@ -146,7 +157,7 @@ def release(users, uri, *, create=False):
     else:
         (api,), (spa,) = existing
 
-    api = graph("GET", f"/applications/{api['id']}?$select=id,appId,api,identifierUris,signInAudience")
+    api = graph("GET", f"/applications/{api['id']}?$select=id,appId,api,appRoles,identifierUris,signInAudience")
     spa = graph("GET", f"/applications/{spa['id']}?$select=id,appId,spa,signInAudience")
     policy = api["api"]
     (scope,) = policy["oauth2PermissionScopes"]
@@ -163,8 +174,13 @@ def release(users, uri, *, create=False):
         != [{"appId": spa["appId"], "delegatedPermissionIds": [scope["id"]]}]
     ):
         raise RuntimeError("Test application configuration does not match the expected single-tenant policy")
-    for app in (api, spa):
-        verify_assignments(app, users)
+    manager_roles = [
+        str(UUID(role["id"])) for role in api.get("appRoles", [])
+        if role["value"] in ("Teacher", "Admin") and role["isEnabled"] is True
+        and role["allowedMemberTypes"] == ["User"]
+    ]
+    verify_assignments(api, users, (DEFAULT_ROLE, *manager_roles))
+    verify_assignments(spa, users)
     print(
         json.dumps(
             {

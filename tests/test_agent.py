@@ -13,7 +13,6 @@ from starlette.testclient import TestClient
 from edu_agent.demo import demo_analysis, demo_page
 from edu_agent.service import MathAgent
 from edu_domain.contracts import (
-    MAX_PAGE_BYTES,
     AnalysisResult,
     AnalyzePage,
     Candidate,
@@ -150,7 +149,7 @@ def test_host_accepts_an_invocation_and_never_enables_content_recording(monkeypa
         assert generated.json()["items"] == [{"task": "evaluate", "expression": "2-7", "choices": []}]
         invalid = client.post("/invocations", json={**photo.model_dump(), "image_base64": "----"})
         assert invalid.status_code == httpx.codes.UNPROCESSABLE_ENTITY
-        oversized = client.post("/invocations", content=b"x" * (MAX_PAGE_BYTES * 2))
+        oversized = client.post("/invocations", content=b"x" * (agent_host._MAX_BODY + 1))
         assert oversized.status_code == httpx.codes.REQUEST_ENTITY_TOO_LARGE
 
     assert response.await_count == 3

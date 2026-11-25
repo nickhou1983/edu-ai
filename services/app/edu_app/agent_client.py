@@ -11,12 +11,18 @@ from edu_domain.contracts import (
     AnalysisResult,
     AnalyzeEnglish,
     AnalyzePage,
+    DiscoverKnowledge,
     EnglishAnalysisResult,
     EnglishFeedbackResult,
     EnglishPracticeResult,
     GenerateEnglish,
+    GenerateKnowledge,
+    KnowledgeDiscoveryResult,
+    KnowledgeFeedbackResult,
+    KnowledgePracticeResult,
     PracticeResult,
     ReviewEnglish,
+    ReviewKnowledge,
 )
 
 
@@ -64,7 +70,13 @@ class HttpAgent:
                 "agent_unavailable",
                 retryable=response.status_code in (408, 429) or response.status_code >= 500,
             )
-        if isinstance(request, AnalyzeEnglish):
+        if isinstance(request, DiscoverKnowledge):
+            schema = KnowledgeDiscoveryResult
+        elif isinstance(request, GenerateKnowledge):
+            schema = KnowledgePracticeResult
+        elif isinstance(request, ReviewKnowledge):
+            schema = KnowledgeFeedbackResult
+        elif isinstance(request, AnalyzeEnglish):
             schema = EnglishAnalysisResult
         elif isinstance(request, GenerateEnglish):
             schema = EnglishPracticeResult

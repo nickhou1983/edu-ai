@@ -9,8 +9,19 @@ from sqlalchemy.orm import Session
 from edu_agent.demo import DemoImageOnly
 from edu_app.agent_client import Agent, AgentFailure
 from edu_app.assets import AssetNotFound, AssetUnavailable
-from edu_app.db import EnglishRecord, Job, Page, Practice, PracticeItem, Submission, new_id, now_ms
+from edu_app.db import (
+    EnglishRecord,
+    Job,
+    KnowledgeActivity,
+    Page,
+    Practice,
+    PracticeItem,
+    Submission,
+    new_id,
+    now_ms,
+)
 from edu_app.english_jobs import english_work, save_english
+from edu_app.knowledge_jobs import knowledge_work, save_knowledge
 from edu_app.reports import make_report, save_report
 from edu_app.runtime import Runtime
 from edu_domain.contracts import (
@@ -50,6 +61,7 @@ class Work:
     submission_id: str | None
     practice_id: str | None
     english_id: str | None
+    knowledge_id: str | None
 
 
 @dataclass(frozen=True)
@@ -68,7 +80,9 @@ def _eligible(timestamp: int):
 def _claim(runtime: Runtime, job_id: str | None) -> Work | None:
     timestamp = now_ms()
     with runtime.db.transaction() as session:
-        query = select(Job).where(_eligible(timestamp)).order_by(Job.available_at, Job.id).limit(1)
+        query = select(Job).where(_eligible(timestamp)).order_by(
+            Job.knowledge_id.is_not(None), Job.available_at, Job.id
+        ).limit(1)
         if job_id is not None:
             query = query.where(Job.id == job_id)
         job = session.scalar(query.with_for_update(skip_locked=True))
@@ -82,7 +96,7 @@ def _claim(runtime: Runtime, job_id: str | None) -> Work | None:
         job.status, job.lease_token, job.lease_until = "running", new_id(), timestamp + LEASE_MS
         job.attempts += 1
         job.error = None
-        return Work(job.id, job.lease_token, job.submission_id, job.practice_id, job.english_id)
+        return Work(job.id, job.lease_token, job.submission_id, job.practice_id, job.english_id, job.knowledge_id)
 
 
 def _analyze(runtime: Runtime, agent: Agent, submission_id: str) -> dict:
@@ -175,7 +189,20 @@ def run_one(runtime: Runtime, agent: Agent, job_id: str | None = None) -> bool:
     work = _claim(runtime, job_id)
     if not work:
         return False
-    if work.english_id:
+    if work.knowledge_id:
+        try:
+            document = knowledge_work(runtime, agent, work.knowledge_id)
+            with runtime.db.transaction() as session:
+                job = _lease(session, work)
+                if not job:
+                    return True
+                activity = session.get_one(KnowledgeActivity, work.knowledge_id, with_for_update=True)
+                save_knowledge(session, activity, document)
+                _complete(job)
+        except AgentFailure as exc:
+            _fail(runtime, work, exc)
+            return True
+    elif work.english_id:
         try:
             document = english_work(runtime, agent, work.english_id)
         except AgentFailure as exc:

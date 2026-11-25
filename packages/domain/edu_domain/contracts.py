@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = "1"
 RULES_VERSION = "math-v1"
@@ -267,8 +267,110 @@ class EnglishFeedbackResult(Contract):
     provenance: AgentVersion
 
 
+Subject = Literal["math", "english"]
+KnowledgeId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
+KnowledgeTitle = Annotated[str, Field(min_length=2, max_length=80)]
+
+
+class KnowledgeDescriptor(Contract):
+    id: KnowledgeId
+    title: KnowledgeTitle
+    unit: Annotated[str, Field(min_length=1, max_length=80)]
+    description: Annotated[str, Field(max_length=600)]
+
+    @field_validator("title", "unit", "description", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class KnowledgeCandidate(Contract):
+    existing_id: KnowledgeId | None
+    title: KnowledgeTitle
+    unit: Annotated[str, Field(min_length=1, max_length=80)]
+    description: Annotated[str, Field(min_length=1, max_length=600)]
+
+    @field_validator("title", "unit", "description", mode="before")
+    @classmethod
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class KnowledgeDiscoveryItem(Contract):
+    label: Annotated[str, Field(min_length=1, max_length=32)]
+    region: Region
+    stem: Annotated[str, Field(min_length=1, max_length=2000)]
+    points: Annotated[list[KnowledgeCandidate], Field(min_length=1, max_length=4)]
+    feedback: EnglishFeedback | None
+
+
+class KnowledgeDiscoveries(Contract):
+    quality: Literal["readable", "unclear"]
+    items: Annotated[list[KnowledgeDiscoveryItem], Field(max_length=MAX_ITEMS_PER_PAGE)]
+
+
+class DiscoverKnowledge(Contract):
+    version: Literal["1"]
+    operation: Literal["discover_knowledge"]
+    subject: Subject
+    image_base64: Annotated[str, Field(min_length=4, max_length=((MAX_PAGE_BYTES + 2) // 3) * 4)]
+    catalog: Annotated[list[KnowledgeDescriptor], Field(max_length=250)]
+
+
+class KnowledgeDiscoveryResult(KnowledgeDiscoveries):
+    version: Literal["1"]
+    operation: Literal["discover_knowledge"]
+    provenance: AgentVersion
+
+
+class ReferenceExercise(Contract):
+    instruction: Annotated[str, Field(min_length=1, max_length=1000)]
+    context: Annotated[str, Field(max_length=5000)]
+    reference_answer: Annotated[str, Field(min_length=1, max_length=4000)]
+    explanation: Annotated[str, Field(min_length=1, max_length=2000)]
+
+
+class ReferenceExercises(Contract):
+    items: Annotated[list[ReferenceExercise], Field(min_length=3, max_length=5)]
+
+
+class GenerateKnowledge(Contract):
+    version: Literal["1"]
+    operation: Literal["generate_knowledge"]
+    subject: Subject
+    point: KnowledgeDescriptor
+    difficulty: Difficulty
+    count: Annotated[int, Field(ge=3, le=5)]
+
+
+class KnowledgePracticeResult(ReferenceExercises):
+    version: Literal["1"]
+    operation: Literal["generate_knowledge"]
+    provenance: AgentVersion
+
+
+class ReviewKnowledge(Contract):
+    version: Literal["1"]
+    operation: Literal["review_knowledge"]
+    subject: Subject
+    point: KnowledgeDescriptor
+    exercise: ReferenceExercise
+    answer: EnglishText
+
+
+class KnowledgeFeedbackResult(Contract):
+    version: Literal["1"]
+    operation: Literal["review_knowledge"]
+    feedback: EnglishFeedback
+    provenance: AgentVersion
+
+
 AgentRequest = Annotated[
-    AnalyzePage | GeneratePractice | AnalyzeEnglish | GenerateEnglish | ReviewEnglish,
+    AnalyzePage | GeneratePractice | AnalyzeEnglish | GenerateEnglish | ReviewEnglish
+    | DiscoverKnowledge | GenerateKnowledge | ReviewKnowledge,
     Field(discriminator="operation"),
 ]
-AgentResult = AnalysisResult | PracticeResult | EnglishAnalysisResult | EnglishPracticeResult | EnglishFeedbackResult
+AgentResult = (
+    AnalysisResult | PracticeResult | EnglishAnalysisResult | EnglishPracticeResult | EnglishFeedbackResult
+    | KnowledgeDiscoveryResult | KnowledgePracticeResult | KnowledgeFeedbackResult
+)

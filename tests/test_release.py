@@ -86,8 +86,11 @@ sys.path[:0] = [str(root / name) for name in (
 import edu_app.api
 import edu_app.jobs
 import edu_agent.english_demo
+import edu_agent.knowledge_demo
 import edu_domain.english
-for module in (edu_app.api, edu_app.jobs, edu_agent.english_demo, edu_domain.english):
+import edu_app.knowledge_api
+for module in (edu_app.api, edu_app.jobs, edu_agent.english_demo, edu_agent.knowledge_demo,
+               edu_app.knowledge_api, edu_domain.english):
     assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__
 """
     environment = {key: value for key, value in os.environ.items() if not key.startswith(("EDU_", "PYTHON"))}
@@ -95,3 +98,29 @@ for module in (edu_app.api, edu_app.jobs, edu_agent.english_demo, edu_domain.eng
         [sys.executable, "-I", "-c", code, str(app)],
         cwd=tmp_path, env=environment, check=True, capture_output=True, text=True,
     )
+
+
+def test_test_access_verifier_allows_manager_roles_without_expanding_nominated_users(monkeypatch):
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("entra_release", root / "infra/release/entra.py")
+    release = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(release)
+    users = ["user-one", "user-two"]
+    teacher_role = "teacher-role"
+    monkeypatch.setattr(release, "find", lambda *_: [{"id": "api-sp"}])
+    monkeypatch.setattr(release, "graph", lambda *_: {"appRoleAssignmentRequired": True})
+    assignments = [
+        {"principalId": users[0], "principalType": "User", "appRoleId": teacher_role},
+        {"principalId": users[1], "principalType": "User", "appRoleId": release.DEFAULT_ROLE},
+    ]
+    monkeypatch.setattr(release, "collection", lambda *_args, **_kwargs: assignments)
+    release.verify_assignments({"appId": "test-api"}, users, (release.DEFAULT_ROLE, teacher_role))
+    with pytest.raises(RuntimeError, match="two nominated users"):
+        release.verify_assignments({"appId": "test-spa"}, users)
+    assignments.append({"principalId": "third-user", "principalType": "User", "appRoleId": teacher_role})
+    with pytest.raises(RuntimeError, match="two nominated users"):
+        release.verify_assignments({"appId": "test-api"}, users, (release.DEFAULT_ROLE, teacher_role))
+    assignments.pop()
+    assignments[0]["principalType"] = "Group"
+    with pytest.raises(RuntimeError, match="two nominated users"):
+        release.verify_assignments({"appId": "test-api"}, users, (release.DEFAULT_ROLE, teacher_role))

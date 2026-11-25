@@ -134,6 +134,12 @@ class MathAgent:
         return AgentVersion(model=model, prompt=PROMPT_VERSION, agent=self.version)
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
+        from edu_domain.contracts import DiscoverKnowledge, GenerateKnowledge, ReviewKnowledge
+
+        if isinstance(request, (DiscoverKnowledge, GenerateKnowledge, ReviewKnowledge)):
+            from edu_agent.knowledge_service import KnowledgeAgent
+
+            return await KnowledgeAgent(self.model, self.version).invoke(request)
         if not isinstance(request, (AnalyzePage, GeneratePractice)):
             from edu_agent.english_service import EnglishAgent
 

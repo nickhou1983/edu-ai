@@ -31,6 +31,7 @@ APP_AGENT_FILES = (
     "services/foundry-agent/edu_agent/__init__.py",
     "services/foundry-agent/edu_agent/demo.py",
     "services/foundry-agent/edu_agent/english_demo.py",
+    "services/foundry-agent/edu_agent/knowledge_demo.py",
 )
 DOCKERFILES = {
     "app": "infra/docker/app.Dockerfile",

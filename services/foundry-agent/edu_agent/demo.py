@@ -130,6 +130,12 @@ def demo_practice(request: GeneratePractice) -> PracticeResult:
 
 class DemoAgent:
     def invoke(self, request: AgentRequest) -> AgentResult:
+        from edu_domain.contracts import DiscoverKnowledge, GenerateKnowledge, ReviewKnowledge
+
+        if isinstance(request, (DiscoverKnowledge, GenerateKnowledge, ReviewKnowledge)):
+            from edu_agent.knowledge_demo import knowledge_demo
+
+            return knowledge_demo(request)
         if not isinstance(request, (AnalyzePage, GeneratePractice)):
             from edu_agent.english_demo import english_demo
 

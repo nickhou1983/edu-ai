@@ -4,13 +4,14 @@ import { createRoot } from "react-dom/client";
 import { apiClient, type Api, type Evidence, type SessionConfig } from "./api";
 import { Desk } from "./desk";
 import { EnglishWorkspace } from "./english";
+import { KnowledgeWorkspace } from "./knowledge";
 import { MasteryView, PracticeDesk, PracticeView } from "./practice";
 import { ReportView } from "./report";
 import { Icon, Problem } from "./ui";
 import "./styles.css";
 
-type View = "desk" | "report" | "mastery" | "practice" | "exercise" | "english";
-type Route = { view: View; id?: string; item?: string; skill?: string };
+type View = "desk" | "report" | "mastery" | "practice" | "exercise" | "english" | "knowledge";
+type Route = { view: View; id?: string; item?: string; skill?: string; subject?: "math" | "english" };
 type ScreenProps = { api: Api; badge: string; sample?: boolean; sampleOnly?: boolean; identity: React.ReactNode };
 const publicApi = apiClient();
 
@@ -19,6 +20,7 @@ function routeFromLocation(): Route {
   const view = params.get("view");
   const id = params.get("id");
   const item = params.get("item") ?? undefined;
+  if (view === "knowledge") return { view, id: id ?? undefined, subject: params.get("subject") === "english" ? "english" : "math" };
   if (view === "english") return { view, id: id ?? undefined, skill: params.get("skill") ?? undefined };
   if ((view === "report" || view === "exercise") && id) return { view, id, item };
   if (view === "mastery") return { view };
@@ -40,6 +42,7 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
     if (next.id) params.set("id", next.id);
     if (next.item) params.set("item", next.item);
     if (next.skill) params.set("skill", next.skill);
+    if (next.subject) params.set("subject", next.subject);
     window.history.pushState(null, "", params.size ? `?${params}` : location.pathname);
     setRoute(next);
     window.scrollTo({ top: 0, behavior: "instant" });
@@ -51,6 +54,7 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
   const viewReport = (id: string) => go({ view: "report", id });
   const viewExercise = (id: string) => go({ view: "exercise", id });
   const nav = route.view === "report" ? "desk" : route.view === "exercise" ? "practice" : route.view;
+  const english = route.view === "english" || (route.view === "knowledge" && route.subject === "english");
 
   function viewEvidence(entry: Evidence) {
     if (entry.submissionId) go({ view: "report", id: entry.submissionId, item: entry.itemId });
@@ -76,10 +80,17 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
     </header>
     <main className="wrap" id="content">
       <div className="subject-switch" role="group" aria-label="学习科目">
-        <button aria-pressed={route.view !== "english"} onClick={viewDesk}>数学</button>
-        <button aria-pressed={route.view === "english"} onClick={() => go({ view: "english" })}>英语</button>
+        <button aria-pressed={!english} onClick={() => route.view === "knowledge" ? go({ view: "knowledge", subject: "math" }) : viewDesk()}>数学</button>
+        <button aria-pressed={english} onClick={() => go(route.view === "knowledge"
+          ? { view: "knowledge", subject: "english" } : { view: "english" })}>英语</button>
+        <button aria-pressed={route.view === "knowledge"} onClick={() =>
+          go({ view: "knowledge", subject: english ? "english" : "math" })}>知识点目录</button>
         <span>初一 · 学习回路</span>
       </div>
+      {route.view === "knowledge" && <KnowledgeWorkspace key={`${route.subject}:${route.id ?? "directory"}`}
+        api={api} subject={route.subject ?? "math"} id={route.id}
+        open={(id) => go({ view: "knowledge", subject: route.subject ?? "math", id })}
+        learn={(point) => point.subject === "english" ? go({ view: "english", skill: point.id }) : viewPractice(point.id)} />}
       {route.view === "english" && <EnglishWorkspace api={api} sample={sample} sampleOnly={sampleOnly}
         id={route.id} focused={route.skill} open={(id) => go({ view: "english", id, skill: route.skill })}
         focus={(skill) => go({ view: "english", skill })} />}

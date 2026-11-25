@@ -171,8 +171,13 @@ def test_outbox_send_failure_rolls_back_delivery_and_success_is_not_dispatched_t
         assert db.get(Job, submission["jobId"]).dispatched_at is None
     sender.send_messages.side_effect = None
     assert _dispatch(runtime, sender)
+    assert _dispatch(runtime, sender)
     assert not _dispatch(runtime, sender)
-    assert str(sender.send_messages.call_args.args[0]) == submission["jobId"]
+    delivered = [str(call.args[0]) for call in sender.send_messages.call_args_list[1:]]
+    with runtime.db.session() as db:
+        expected = {job.id for job in db.query(Job).all()}
+    assert set(delivered) == expected
+    assert len(delivered) == len(expected) == 2
 
 
 def test_practice_withholds_answers_and_uses_first_unhinted_encounter(client, runtime):

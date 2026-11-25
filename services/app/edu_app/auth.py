@@ -75,4 +75,17 @@ class Auth:
             or "access_as_user" not in claims["scp"].split()
         ):
             raise HTTPException(403, "此账号无权使用应用。")
+        request.state.edu_roles = claims.get("roles", [])
         return f"{tenant}:{user}"
+
+    def can_manage_knowledge(self, request: Request, owner: str) -> bool:
+        if self.settings.mode == "local":
+            return owner == "demo-a"
+        roles = getattr(request.state, "edu_roles", [])
+        return isinstance(roles, list) and any(role in ("Teacher", "Admin") for role in roles)
+
+    def knowledge_manager(self, request: Request) -> str:
+        owner = self.current_owner(request)
+        if not self.can_manage_knowledge(request, owner):
+            raise HTTPException(403, "只有教师或管理员可以维护共享知识点。")
+        return owner

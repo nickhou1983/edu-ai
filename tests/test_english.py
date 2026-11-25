@@ -327,7 +327,7 @@ def test_english_migration_preserves_existing_math_rows(tmp_path):
                 VALUES ('legacy-evidence', 'demo-a', 'rational-sum', 'legacy-problem', 2, 1, 'legacy')
             """))
             command.upgrade(config, "head")
-            assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0003"
+            assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
             assert conn.execute(text("SELECT submission_id, english_id, status FROM jobs")).one() == ("legacy", None, "done")
             assert conn.scalar(text("SELECT score FROM mastery_evidence")) == 2
             assert conn.scalar(text("SELECT revision FROM submissions")) == 1

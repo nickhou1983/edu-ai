@@ -16,7 +16,7 @@ from edu_domain.contracts import MAX_PAGE_BYTES, AgentRequest
 
 logger = logging.getLogger(__name__)
 _REQUEST = TypeAdapter(AgentRequest)
-_MAX_BODY = ((MAX_PAGE_BYTES + 2) // 3) * 4 + 4096
+_MAX_BODY = ((MAX_PAGE_BYTES + 2) // 3) * 4 + 1_250_000
 
 
 class FoundryModel:
