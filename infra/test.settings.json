@@ -26,6 +26,13 @@
   "project": "proj-edu-ai-test-c2d102",
   "agent": "agent-edu-ai-test-c2d102",
   "model": "gpt-5-mini",
+  "agentModel": {
+    "deployment": "gpt-6.1-sol",
+    "name": "gpt-6.1-sol",
+    "version": "2026-09-29",
+    "sku": "DataZoneStandard",
+    "capacity": 30
+  },
   "spaRegistration": "edu-ai-test-c2d102-spa",
   "apiRegistration": "edu-ai-test-c2d102-api"
 }

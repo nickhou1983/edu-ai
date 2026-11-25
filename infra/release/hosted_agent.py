@@ -14,17 +14,20 @@ ENDPOINT = f"https://{SETTINGS['foundry']}.services.ai.azure.com/api/projects/{S
 AGENT = SETTINGS["agent"]
 
 
-def definition(image: str) -> HostedAgentDefinition:
+def definition(image: str, model_deployment: str | None = None) -> HostedAgentDefinition:
     registry = re.escape(SETTINGS["registry"])
     if not re.fullmatch(rf"{registry}(?:-[a-z0-9]+)?\.azurecr\.io/edu-agent@sha256:[0-9a-f]{{64}}", image):
         raise ValueError("Expected the test registry's digest-pinned edu-agent image")
+    deployment = SETTINGS["agentModel"]["deployment"] if model_deployment is None else model_deployment
+    if not deployment:
+        raise ValueError("Expected a nonempty model deployment name")
     config = HostedAgentDefinition(
         cpu="1",
         memory="2Gi",
         container_configuration=ContainerConfiguration(image=image),
         protocol_versions=[ProtocolVersionRecord(protocol="invocations", version="2.0.0")],
         environment_variables={
-            "MODEL_DEPLOYMENT_NAME": SETTINGS["model"],
+            "MODEL_DEPLOYMENT_NAME": deployment,
             "PYTHONNOUSERSITE": "1",
             "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
             "AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED": "false",
@@ -37,9 +40,10 @@ def definition(image: str) -> HostedAgentDefinition:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Register the test Hosted Agent from a verified image.")
     parser.add_argument("image")
+    parser.add_argument("--model-deployment", help="Explicit existing model deployment, including rollback.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    config = definition(args.image)
+    config = definition(args.image, args.model_deployment)
     if args.dry_run:
         print(json.dumps(config.as_dict(), indent=2))
         return
@@ -52,15 +56,24 @@ def main() -> None:
             latest = project.agents.get(AGENT).versions.latest
         except ResourceNotFoundError:
             latest = None
-        if latest and latest.metadata.get("image") == args.image:
-            if latest.definition.as_dict() != config.as_dict():
-                raise RuntimeError(
-                    "Existing agent metadata matches the image but not the expected definition"
-                )
+        current_definition = latest.definition.as_dict() if latest else {}
+        # The service adds an empty protocol field not represented by this SDK.
+        if current_definition.get("container_protocol_versions") == []:
+            current_definition.pop("container_protocol_versions")
+        if (
+            latest
+            and latest.metadata.get("image") == args.image
+            and current_definition == config.as_dict()
+        ):
             version = latest.version
         else:
             version = project.agents.create_version(
-                AGENT, definition=config, metadata={"image": args.image}
+                AGENT,
+                definition=config,
+                metadata={
+                    "image": args.image,
+                    "model": config.environment_variables["MODEL_DEPLOYMENT_NAME"],
+                },
             ).version
 
         for _ in range(90):

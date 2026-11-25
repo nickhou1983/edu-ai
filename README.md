@@ -45,6 +45,8 @@ EDU_MODE=local .venv/bin/python -m edu_app serve --with-worker
 
 ## 项目结构与验证
 
+当前 Azure Agent 使用 `gpt-6.1-sol`（`2026-09-29`），部署类型为美国 `DataZoneStandard`、30,000 TPM；保留旧 `gpt-5-mini` 模型用于回退。模型费用按实际 token 另计，容量不是费用上限。模型部署与 Agent 配置切换见[部署手册](infra/README.md#独立模型部署与-agent-切换)。
+
 `apps/web` 是 React 学生端；`services/app` 是 FastAPI、队列 Worker 和数据库迁移；`services/foundry-agent` 是 Foundry Invocations 入口及本地替身；`packages/domain` 是共享契约、图片预处理、数学验证器和英语参考答案匹配规则。
 
 ```bash

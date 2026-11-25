@@ -2,7 +2,70 @@ import importlib.util
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+
+@pytest.fixture
+def hosted_release():
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("hosted_release", root / "infra/release/hosted_agent.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_hosted_release(monkeypatch, release, image, latest, version):
+    project = MagicMock()
+    project.agents.get.side_effect = [
+        SimpleNamespace(versions=SimpleNamespace(latest=latest)),
+        SimpleNamespace(state="enabled", versions=SimpleNamespace(latest=SimpleNamespace(version=version))),
+    ]
+    project.agents.create_version.return_value = SimpleNamespace(version=version)
+    project.agents.get_version.return_value = SimpleNamespace(status="active")
+    monkeypatch.setattr(release, "AzureCliCredential", lambda: nullcontext(object()))
+    monkeypatch.setattr(release, "AIProjectClient", lambda **kwargs: nullcontext(project))
+    monkeypatch.setattr(sys, "argv", ["hosted_agent.py", image])
+    release.main()
+    return project
+
+
+def test_hosted_release_creates_version_for_same_image_with_changed_model(monkeypatch, hosted_release):
+    image = f"{hosted_release.SETTINGS['registry']}.azurecr.io/edu-agent@sha256:{'a' * 64}"
+    latest = SimpleNamespace(
+        version="5",
+        metadata={"image": image},
+        definition=hosted_release.definition(image, "previous-model"),
+    )
+    project = run_hosted_release(monkeypatch, hosted_release, image, latest, "6")
+    project.agents.create_version.assert_called_once()
+    config = project.agents.create_version.call_args.kwargs["definition"]
+    assert config.container_configuration.image == image
+    assert (
+        config.environment_variables["MODEL_DEPLOYMENT_NAME"]
+        == hosted_release.SETTINGS["agentModel"]["deployment"]
+    )
+
+
+def test_hosted_release_reuses_identical_image_and_model(monkeypatch, hosted_release):
+    image = f"{hosted_release.SETTINGS['registry']}.azurecr.io/edu-agent@sha256:{'a' * 64}"
+    latest = SimpleNamespace(version="6", metadata={"image": image}, definition=hosted_release.definition(image))
+    latest.definition["container_protocol_versions"] = []
+    project = run_hosted_release(monkeypatch, hosted_release, image, latest, "6")
+    project.agents.create_version.assert_not_called()
+
+
+def test_hosted_release_model_override_preserves_other_configuration(hosted_release):
+    image = f"{hosted_release.SETTINGS['registry']}.azurecr.io/edu-agent@sha256:{'a' * 64}"
+    config = hosted_release.definition(image).as_dict()
+    rollback = hosted_release.definition(image, "previous-model").as_dict()
+    assert rollback["environment_variables"].pop("MODEL_DEPLOYMENT_NAME") == "previous-model"
+    config["environment_variables"].pop("MODEL_DEPLOYMENT_NAME")
+    assert rollback == config
 
 
 def test_isolated_app_release_contains_english_runtime_imports(tmp_path):

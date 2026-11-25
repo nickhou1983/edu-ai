@@ -8,7 +8,7 @@
 2. 用 `az deployment sub create --location northcentralus --name edu-ai-test-foundation-nc --template-file infra/main.bicep --parameters deployerObjectId="$DEPLOYER_OBJECT_ID"` 建立依赖，读取输出 `appOrigin`、`projectEndpoint` 和 `registryLoginServer`。部署者 ID 是当前 Azure CLI 用户在目标租户中的对象 ID。确认 Foundry 项目身份在账户范围具有 Foundry User 角色（账户创建项目时可自动授予），项目身份和三个工作负载身份均可从 ACR 拉取镜像。不要把 Application Insights 连接到 Foundry 项目，否则服务端会自动记录模型内容。
 3. 用 `python infra/release/build_context.py --output-dir "$BUILD_CONTEXT_DIR"` 生成两个隔离目录，再用 `az acr build --registry creduaitestc2d102 --image edu-app:"$TAG" --file "$BUILD_CONTEXT_DIR/app/Dockerfile" --platform linux/amd64 "$BUILD_CONTEXT_DIR/app"` 构建应用。用相同参数、仓库 `edu-agent`、Dockerfile `$BUILD_CONTEXT_DIR/agent/Dockerfile` 和目录 `$BUILD_CONTEXT_DIR/agent` 构建 Agent。Dockerfile 参数使用实际本地路径，不是上下文内的相对路径。不要把仓库根目录作为 ACR 上下文。用 `az acr repository show --name creduaitestc2d102 --image <repository>:<tag> --query digest -o tsv` 解析发布标签；后续发布只用 `sha256:` 摘要。
 4. 运行 `python infra/release/entra.py create "$TEST_USER_1" "$TEST_USER_2" --origin "$APP_ORIGIN"`。脚本将 API 与 SPA 设为单租户、要求分配，并逐一核对两个企业应用恰好只有上述两位用户。如果应用名称已存在，不会覆盖；核对归属后使用 `verify`，不要为规避错误而关闭分配要求。发布参数用脚本输出的两个 `appId`；记录两个 `objectId` 供清理。
-5. 在启用了 `hosted` 依赖的锁定 Python 环境中运行 `python infra/release/hosted_agent.py "$REGISTRY_LOGIN/edu-agent@$AGENT_DIGEST"`。脚本仅向本项目注册 Invocations 2.0.0 容器，等待版本变为 `active`，再输出 `agentUrl`。该入口只有 Worker 业务身份可调用，不给 Agent 数据库或题图存储权限。
+5. 按下文「独立模型部署与 Agent 切换」先确认目标模型已部署，再在启用了 `hosted` 依赖的锁定 Python 环境中运行 `python infra/release/hosted_agent.py "$REGISTRY_LOGIN/edu-agent@$AGENT_DIGEST"`。脚本仅向本项目注册 Invocations 2.0.0 容器，等待版本变为 `active`，再输出 `agentUrl`。该入口只有 Worker 业务身份可调用，不给 Agent 数据库或题图存储权限。
 6. 用下列参数先运行 `phase=migrate`，再用 `az containerapp job start` 启动 `job-init-edu-ai-test-c2d102`，通过 `az containerapp job execution show` 检查该次执行状态为 `Succeeded`。迁移 Job 在私网内创建数据库、映射两种应用身份、执行 Alembic 并授予应用读写权限。确认迁移成功且步骤 4 的 `verify` 通过后，才将相同参数的 `phase` 改成 `serve`，启用 API 和事件 Worker。两个阶段均用增量模式。
 
 ```bash
@@ -33,6 +33,37 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 3. `phase=api`：只更新现有 API/前端；等待就绪后检查登录、数学与英语合成数据流程。
 
 每个阶段均先检查增量 `what-if`，确认不会删除资源或改动阶段外组件，再实际发布。`phase=serve` 保留用于原有一次性发布流程，不用于需要严格先后顺序的英语升级。若新版本失败，停止后续阶段，保留现有资源和迁移数据；数据库已产生英语数据后不能直接降级至 `0002`。
+
+## 独立模型部署与 Agent 切换
+
+`test.settings.json.model` 保留基础模板的 `gpt-5-mini`；`agentModel` 独立配置 Agent 的目标模型。当前选定 `gpt-6.1-sol`、版本 `2026-09-29`、`DataZoneStandard` 容量30（30,000 TPM）。它按实际 token 计费，不是 PTU；美国数据区推理不是单一地域推理，仍只允许合成数据。部署前重新核对配额和费用，不把容量当作费用上限。
+
+经审批后，在现有资源组只执行 `model.bicep`，不重放基础模板、网络或身份配置：
+
+```bash
+az deployment group what-if --subscription f1212123-43be-417e-ab0a-0b81570c04d8 \
+  --resource-group rg-edu-ai-test-c2d102 --name edu-ai-model-sol-20261125 \
+  --template-file infra/model.bicep
+az deployment group create --subscription f1212123-43be-417e-ab0a-0b81570c04d8 \
+  --resource-group rg-edu-ai-test-c2d102 --name edu-ai-model-sol-20261125 \
+  --mode Incremental --template-file infra/model.bicep
+az cognitiveservices account deployment show \
+  --subscription f1212123-43be-417e-ab0a-0b81570c04d8 \
+  --resource-group rg-edu-ai-test-c2d102 --name ai-edu-ai-test-c2d102 \
+  --deployment-name gpt-6.1-sol \
+  --query '{state:properties.provisioningState,model:properties.model,sku:sku}'
+```
+
+确认模型 Succeeded 且支持所需 Responses、图片与结构化输出后，用现有的真实 Agent 镜像摘要运行 `hosted_agent.py`。模型切换不需要重建镜像或更新 API/Worker；脚本比较完整定义，相同镜像但模型不同会创建新版本，完全相同则复用。发布后检查 active/enabled、实际 `MODEL_DEPLOYMENT_NAME` 与返回结果的模型来源，而不只检查控制台模型名称。
+
+保留旧模型和版本。若需回退，用相同镜像运行以下命令创建恢复旧模型配置的 Agent 版本；不删除新模型或回退数据库：
+
+```bash
+.venv/bin/python infra/release/hosted_agent.py \
+  "$REGISTRY_LOGIN/edu-agent@$AGENT_DIGEST" --model-deployment gpt-5-mini
+```
+
+`--model-deployment` 是显式临时覆盖，不改 `agentModel` 默认值；后续正常发布仍使用配置中的新模型。不要为切换模型开启内容追踪或增加 Agent 的数据库、Blob 权限。
 
 ## 部署排障
 
