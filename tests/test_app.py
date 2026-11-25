@@ -10,7 +10,8 @@ from edu_app.agent_client import AgentFailure
 from edu_app.db import Evidence, Job, Report, new_id, now_ms
 from edu_app.jobs import LEASE_MS, MAX_ATTEMPTS, _claim, _fail, run_one
 from edu_app.queue import _dispatch
-from edu_domain.contracts import ProblemSpec
+from edu_domain.contracts import MAX_UPLOAD_BYTES, ProblemSpec
+from edu_domain.images import normalize_page
 
 _OTHER_STUDENT = {"X-Demo-Student": "demo-b"}
 
@@ -33,6 +34,101 @@ def _practice(client):
     response = client.post("/api/practice-sets", json={"skill": "rational-sum", "count": 3})
     assert response.status_code == 202, response.json()
     return response.json()
+
+
+@pytest.mark.parametrize(("upload_path", "record_path"), [
+    ("/api/submissions", "/api/submissions"),
+    ("/api/english/worksheets", "/api/english/records"),
+])
+@pytest.mark.parametrize(("image_format", "extension", "content_type"), [
+    ("JPEG", "jpg", "image/jpeg"),
+    ("PNG", "png", "image/png"),
+])
+@pytest.mark.parametrize(("size", "normalized_size"), [
+    ((192, 192), (192, 192)),
+    ((4284, 5712), (1350, 1800)),
+])
+def test_upload_accepts_single_frame_jpeg_and_png_once(
+    client, upload_path, record_path, image_format, extension, content_type, size, normalized_size,
+):
+    image = BytesIO()
+    with Image.new("RGB", size, "white") as source:
+        source.save(image, image_format)
+    files = [("files", (f"page.{extension}", image.getvalue(), content_type))]
+
+    response = client.post(upload_path, files=files)
+    assert response.status_code == 202, response.text
+    assert client.post(upload_path, files=files).json() == response.json()
+    page = client.get(f"{record_path}/{response.json()['id']}/pages/1")
+    assert page.status_code == 200
+    assert page.headers["Content-Type"] == "image/jpeg"
+    assert len(page.content) <= 500_000
+    with Image.open(BytesIO(page.content)) as normalized:
+        assert normalized.format == "JPEG"
+        assert normalized.size == normalized_size
+
+
+@pytest.mark.parametrize("upload_path", ["/api/submissions", "/api/english/worksheets"])
+def test_upload_rejects_multiframe_png(client, upload_path):
+    image = BytesIO()
+    Image.new("RGB", (192, 192), "white").save(
+        image, "PNG", save_all=True, append_images=[Image.new("RGB", (192, 192), "black")],
+    )
+    response = client.post(upload_path, files=_files(image.getvalue()))
+    assert response.status_code == 422
+    assert response.json()["detail"] == "请上传单帧 JPG 或 PNG 图片。"
+    assert client.get("/api/submissions").json() == []
+    assert client.get("/api/english/records").json() == []
+
+
+@pytest.mark.parametrize("upload_path", ["/api/submissions", "/api/english/worksheets"])
+@pytest.mark.parametrize(("size", "reason"), [
+    ((119, 240), "宽高均需至少 120 像素"),
+    ((8000, 8001), "超过 6400 万像素安全上限"),
+])
+def test_upload_rejects_unsafe_dimensions_with_specific_reason(client, upload_path, size, reason):
+    image = BytesIO()
+    with Image.new("L", size, 255) as source:
+        source.save(image, "JPEG")
+    response = client.post(upload_path, files=[("files", ("page.jpg", image.getvalue(), "image/jpeg"))])
+    assert response.status_code == 422
+    assert reason in response.json()["detail"]
+    assert f"{size[0]}×{size[1]}" in response.json()["detail"]
+    assert client.get("/api/submissions").json() == []
+    assert client.get("/api/english/records").json() == []
+
+
+@pytest.mark.parametrize("upload_path", ["/api/submissions", "/api/english/worksheets"])
+def test_automatic_resize_does_not_bypass_upload_byte_limit(client, upload_path):
+    response = client.post(upload_path, files=_files(b"x" * (MAX_UPLOAD_BYTES + 1)))
+    assert response.status_code == 422
+    assert "8 MB" in response.json()["detail"]
+    assert client.get("/api/submissions").json() == []
+    assert client.get("/api/english/records").json() == []
+
+
+def test_large_jpeg_keeps_orientation_and_removes_exif():
+    image = BytesIO()
+    with Image.new("RGB", (4284, 5712), "white") as source:
+        source.paste((220, 30, 30), (0, 0, 500, 500))
+        exif = Image.Exif()
+        exif[274] = 6
+        exif[270] = "synthetic worksheet"
+        source.save(image, "JPEG", exif=exif)
+    with Image.open(BytesIO(normalize_page(image.getvalue()))) as normalized:
+        assert normalized.size == (1800, 1350)
+        assert not normalized.getexif()
+        red, green, blue = normalized.getpixel((1790, 10))
+        assert red > 200 and green < 60 and blue < 60
+
+
+@pytest.mark.parametrize("image_format", ["JPEG", "PNG"])
+def test_image_at_source_pixel_safety_limit_is_resized(image_format):
+    image = BytesIO()
+    with Image.new("L", (8000, 8000), 255) as source:
+        source.save(image, image_format)
+    with Image.open(BytesIO(normalize_page(image.getvalue()))) as normalized:
+        assert normalized.size == (1800, 1800)
 
 
 def test_upload_and_message_replay_grade_once_and_keep_images_private(client, runtime):

@@ -98,6 +98,7 @@ export function Desk({ api, sample, sampleOnly, open, mastery }: {
           <input ref={input} type="file" accept="image/jpeg,image/png" multiple hidden
             onChange={(event) => { add(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
         </div>
+        <p className="muted small">上传后自动等比缩小，不改动本地原图。最多 6400 万像素，宽高均至少 120 像素。</p>
         {!!files.length && (
           <ol className="file-list">
             {files.map((file, index) => <li key={`${file.name}-${index}`}>

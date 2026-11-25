@@ -97,6 +97,7 @@ export function EnglishWorkspace({ api, sample, sampleOnly, id, focused, open, f
         <p className="eyebrow section-code">从已有作业开始</p>
         <h2 id="english-upload">英语作业与试卷</h2>
         <p className="muted">上传 1–4 页截图，检查词汇、语法、阅读作答，查看写作的文字建议。每张不超过 8 MB。</p>
+        <p className="muted small">上传后自动等比缩小，不改动本地原图。最多 6400 万像素，宽高均至少 120 像素。</p>
         <input id="english-files" type="file" accept="image/png,image/jpeg,image/webp" multiple
           aria-label="选择英语作业图片" onChange={(event) => {
             setFiles(Array.from(event.target.files ?? [])); setError("");
