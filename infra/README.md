@@ -90,6 +90,12 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 回退时先将 `mathAiMasteryEnabled` 设回 `false`，只影响新上传。已采用全 AI 模式的作业（包括后续待复核重试）仍需要支持该协议的 Worker 和 Agent。保留新版 API 与数据库迁移，才能继续读取新报告和估计；不要为了回退而删除 AI 证据或降级数据库。
 
+## 英语 AI 批改与掌握度
+
+英语复核复用现有 `0006` 数据库和协议 `2` 超时预算，不需要新迁移。新版 Agent 和 Worker 支持 `analyze_english` 版本 `2`（含原报告待复核批次）及在线客观练习的 `grade_english`。旧分析、练习生成和表达反馈的版本 `1` 仍可用。新版 API、Worker 和 Agent 全部就绪之前保持 `englishAiMasteryEnabled=false`。
+
+实际切换前，用合成样卷和在线客观练习核对双解冲突、部分正确、留白、作答隐藏、原报告重试、样本来源及跨账号隔离。启用或回退只需调整 `phase=api` 的 `englishAiMasteryEnabled`；提交模板时显式传入当前的 `mathAiMasteryEnabled` 和 `mathReviewRetryEnabled`，避免默认值改变现有数学行为。回退只影响新作业和新练习；已经锁定 AI 模式的记录继续依赖新版 Worker 和 Agent。
+
 ## 独立模型部署与 Agent 切换
 
 `test.settings.json.model` 保留基础模板的 `gpt-5-mini`；`agentModel` 独立配置 Agent 的目标模型。当前选定 `gpt-6.1-sol`、版本 `2026-09-29`、`DataZoneStandard` 容量30（30,000 TPM）。它按实际 token 计费，不是 PTU；美国数据区推理不是单一地域推理，仍只允许合成数据。部署前重新核对配额和费用，不把容量当作费用上限。

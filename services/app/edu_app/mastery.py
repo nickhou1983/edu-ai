@@ -4,16 +4,20 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from edu_app.db import Evidence, KnowledgePoint
+from edu_domain.contracts import Subject
 from edu_domain.curriculum import SKILLS
 
 
-def overview(session: Session, owner: str, curriculum=SKILLS, *, include_ai: bool = False) -> list[dict]:
-    encounters_query = select(Evidence).where(Evidence.owner == owner)
+def overview(
+    session: Session, owner: str, curriculum=SKILLS, *, include_ai: bool = False, subject: Subject = "math",
+) -> list[dict]:
+    subject_filter = Evidence.english_id.is_not(None) if subject == "english" else Evidence.english_id.is_(None)
+    encounters_query = select(Evidence).where(Evidence.owner == owner, subject_filter)
     identity = (Evidence.skill, Evidence.problem_key)
-    if include_ai:
+    if include_ai and subject == "math":
         shared_rule_keys = (
             select(Evidence.problem_key)
-            .where(Evidence.owner == owner, Evidence.english_id.is_(None), Evidence.verification == "rules")
+            .where(Evidence.owner == owner, subject_filter, Evidence.verification == "rules")
             .group_by(Evidence.problem_key)
             .having(func.count(Evidence.skill.distinct()) > 1)
             .subquery()
@@ -22,10 +26,10 @@ def overview(session: Session, owner: str, curriculum=SKILLS, *, include_ai: boo
         shared = shared_rule_keys.c.problem_key.is_not(None)
         encounters_query = (
             encounters_query.outerjoin(shared_rule_keys, Evidence.problem_key == shared_rule_keys.c.problem_key)
-            .where(Evidence.english_id.is_(None), or_(Evidence.verification == "rules", ~shared))
+            .where(or_(Evidence.verification == "rules", ~shared))
         )
         identity = (case((shared, Evidence.skill)), Evidence.problem_key)
-    else:
+    elif not include_ai:
         encounters_query = encounters_query.where(Evidence.verification == "rules")
     encounters = encounters_query.add_columns(
         func.row_number()
@@ -59,11 +63,13 @@ def overview(session: Session, owner: str, curriculum=SKILLS, *, include_ai: boo
             "occurredAt": row["occurred_at"],
         }
         if include_ai:
-            item["verification"] = row["verification"]
+            verification = row["verification"]
+            # The historical English "rules" marker used a single AI reference and exact matching.
+            item["verification"] = "legacy_match" if subject == "english" and verification == "rules" else verification
         by_skill[row["skill"]].append(item)
 
     builtin_ids = {skill.id for skill in curriculum}
-    extra_ids = by_skill.keys() - builtin_ids if include_ai else set()
+    extra_ids = by_skill.keys() - builtin_ids if include_ai and subject == "math" else set()
     extra = session.scalars(
         select(KnowledgePoint).where(KnowledgePoint.subject == "math", KnowledgePoint.id.in_(extra_ids))
         .order_by(KnowledgePoint.unit, KnowledgePoint.title, KnowledgePoint.id)
@@ -85,7 +91,7 @@ def overview(session: Session, owner: str, curriculum=SKILLS, *, include_ai: boo
             "sampleCount": len(evidence),
             "evidence": evidence,
         }
-        if include_ai:
+        if include_ai and subject == "math":
             stats["practiceMode"] = "rule" if skill.id in builtin_ids else "reference"
         skills.append(stats)
     return skills

@@ -230,16 +230,50 @@ class EnglishReviews(Contract):
     reviews: Annotated[list[EnglishReviewEntry], Field(max_length=12)]
 
 
+class EnglishObjectiveReview(Contract):
+    index: Annotated[int, Field(ge=0, lt=12)]
+    source_consistent: bool
+    references_agree: bool
+    outcome: Outcome
+    explanation: Annotated[str, Field(min_length=1, max_length=1000)]
+    partial_basis: Annotated[str, Field(max_length=500)] | None
+    mastery_skill: EnglishSkillId | None
+    mastery_basis: Annotated[str, Field(max_length=500)] | None
+
+
+class EnglishObjectiveReviews(Contract):
+    reviews: Annotated[list[EnglishObjectiveReview], Field(max_length=12)]
+
+
+class EnglishAssessment(Contract):
+    first: EnglishProblem | None
+    second: EnglishProblem | None
+    review: EnglishObjectiveReview | None
+
+
 class EnglishAnalyzedItem(Contract):
     source: EnglishReadItem
     problem: EnglishProblem | None
     feedback: EnglishFeedback | None
+    assessment: EnglishAssessment | None = Field(default=None, exclude_if=lambda value: value is None)
+    review_timed_out: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class AnalyzeEnglish(Contract):
-    version: Literal["1"]
+    version: Literal["1", "2"]
     operation: Literal["analyze_english"]
     image_base64: Annotated[str, Field(min_length=4, max_length=((MAX_PAGE_BYTES + 2) // 3) * 4)]
+    review_items: Annotated[list[EnglishReadItem], Field(min_length=1, max_length=MAX_AI_REVIEW_BATCH)] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def check_review_items(self):
+        if self.review_items is not None and (self.version != "2" or any(
+            not item.readable or item.prompt is None or item.prompt.mode == "open" for item in self.review_items
+        )):
+            raise ValueError("English review retry requires v2 and readable objective items")
+        return self
 
 
 class GenerateEnglish(Contract):
@@ -263,8 +297,21 @@ class ReviewEnglish(Contract):
         return self
 
 
+class GradeEnglish(Contract):
+    version: Literal["2"]
+    operation: Literal["grade_english"]
+    prompt: EnglishPrompt
+    answer: Annotated[str, Field(min_length=1, max_length=256)]
+
+    @model_validator(mode="after")
+    def require_objective(self):
+        if self.prompt.mode == "open" or not self.answer.strip():
+            raise ValueError("A submitted objective answer is required")
+        return self
+
+
 class EnglishAnalysisResult(Contract):
-    version: Literal["1"]
+    version: Literal["1", "2"]
     operation: Literal["analyze_english"]
     quality: Literal["readable", "unclear"]
     items: Annotated[list[EnglishAnalyzedItem], Field(max_length=12)]
@@ -285,6 +332,13 @@ class EnglishFeedbackResult(Contract):
     version: Literal["1"]
     operation: Literal["review_english"]
     feedback: EnglishFeedback
+    provenance: AgentVersion
+
+
+class EnglishGradeResult(Contract):
+    version: Literal["2"]
+    operation: Literal["grade_english"]
+    assessment: EnglishAssessment
     provenance: AgentVersion
 
 
@@ -464,12 +518,12 @@ class KnowledgeFeedbackResult(Contract):
 
 
 AgentRequest = Annotated[
-    AnalyzePage | GeneratePractice | AnalyzeEnglish | GenerateEnglish | ReviewEnglish
+    AnalyzePage | GeneratePractice | AnalyzeEnglish | GenerateEnglish | ReviewEnglish | GradeEnglish
     | DiscoverKnowledge | GenerateKnowledge | ReviewKnowledge,
     Field(discriminator="operation"),
 ]
 AgentResult = (
-    AnalysisResult | PracticeResult | EnglishAnalysisResult | EnglishPracticeResult | EnglishFeedbackResult
+    AnalysisResult | PracticeResult | EnglishAnalysisResult | EnglishPracticeResult | EnglishFeedbackResult | EnglishGradeResult
     | KnowledgeDiscoveryResult | KnowledgePracticeResult | KnowledgeFeedbackResult
 )
 

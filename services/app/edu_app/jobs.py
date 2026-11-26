@@ -422,18 +422,26 @@ def _run_work(runtime: Runtime, agent: Agent, work: Work) -> bool:
             _fail(runtime, work, exc)
             return True
     elif work.english_id:
+        record_id = work.english_id
+
+        def checkpoint(document: dict) -> None:
+            with runtime.db.transaction() as session:
+                job = _require_lease(session, work)
+                save_english(session, session.get_one(EnglishRecord, record_id, with_for_update=True), document)
+                job.lease_until = now_ms() + LEASE_MS
+
         try:
-            document = english_work(runtime, agent, work.english_id)
+            document = english_work(runtime, agent, record_id, renew=lambda: _renew(runtime, work), checkpoint=checkpoint)
+            with runtime.db.transaction() as session:
+                job = _require_lease(session, work)
+                record = session.get_one(EnglishRecord, record_id, with_for_update=True)
+                if record.kind == "worksheet" and document.get("aiMastery") and not record.document.get("pendingReviewRetry"):
+                    job.manual_retries = 0
+                save_english(session, record, document)
+                _complete(job)
         except AgentFailure as exc:
             _fail(runtime, work, exc)
             return True
-        with runtime.db.transaction() as session:
-            job = _lease(session, work)
-            if not job:
-                return True
-            record = session.get_one(EnglishRecord, work.english_id, with_for_update=True)
-            save_english(session, record, document)
-            _complete(job)
     elif work.submission_id:
         try:
             if not _retry_pending_reviews(runtime, agent, work, work.submission_id):

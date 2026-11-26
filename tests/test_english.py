@@ -24,8 +24,12 @@ from edu_app.db import EnglishRecord, Evidence, Job
 from edu_app.jobs import run_one
 from edu_domain.contracts import (
     AnalyzeEnglish,
+    EnglishAnalyzedItem,
+    EnglishAssessment,
     EnglishCandidates,
     EnglishFeedback,
+    EnglishGradeResult,
+    EnglishObjectiveReview,
     EnglishPrompt,
     EnglishReadPage,
     EnglishReviewEntry,
@@ -33,9 +37,10 @@ from edu_domain.contracts import (
     EnglishSolution,
     EnglishSolutions,
     GenerateEnglish,
+    GradeEnglish,
     ReviewEnglish,
 )
-from edu_domain.english import ENGLISH_SKILLS, english_correct, english_outcome
+from edu_domain.english import ENGLISH_SKILLS, english_correct, english_outcome, english_prompt, grade_english
 from edu_domain.images import normalize_page
 
 _OTHER = {"X-Demo-Student": "demo-b"}
@@ -288,6 +293,221 @@ def test_english_generation_requires_independent_answer_consensus():
     assert all(set(item["prompt"]) == set(EnglishPrompt.model_fields) for item in json.loads(solve.args[2]))
 
 
+def _assessment(problem, *, index=0, outcome="correct", **review_fields):
+    review = EnglishObjectiveReview.model_validate({
+        "index": index, "source_consistent": True, "references_agree": True, "outcome": outcome,
+        "explanation": "题面和作答均已核对。", "partial_basis": None,
+        "mastery_skill": problem.skill, "mastery_basis": "直接核对所要求的词形。",
+        **review_fields,
+    })
+    return EnglishAssessment(first=problem, second=problem.model_copy(), review=review)
+
+
+@pytest.mark.parametrize(("case", "outcome", "score"), [
+    ("partial", "partial", 1), ("unsupported_partial", "undetermined", None),
+    ("conflicting_solvers", "undetermined", None), ("source_mismatch", "undetermined", None),
+    ("blank", "blank", None), ("missing_attribution", "correct", None),
+    ("choice_partial", "undetermined", None), ("alternate_reading", "correct", 2),
+])
+def test_english_ai_checks_grade_and_mastery_independently(case, outcome, score):
+    skill = {"choice_partial": "english-grammar", "alternate_reading": "english-reading"}.get(
+        case, "english-vocabulary",
+    )
+    problem = demo_problems(_request(skill))[0]
+    answer, mark = problem.answers[0], "present"
+    if "partial" in case:
+        if case == "choice_partial":
+            answer = "B"
+        else:
+            problem = problem.model_copy(update={"instruction": "Write both fruit names.", "answers": ["apple and pear"]})
+            answer = "apple"
+        assessment = _assessment(problem, outcome="partial",
+                                 partial_basis=None if case == "unsupported_partial" else "写对了 apple。")
+    elif case == "blank":
+        answer, mark = None, "blank"
+        assessment = _assessment(problem, outcome="blank")
+    elif case == "missing_attribution":
+        assessment = _assessment(problem, mastery_basis=" ")
+    elif case == "source_mismatch":
+        assessment = _assessment(problem, source_consistent=False)
+    elif case == "conflicting_solvers":
+        assessment = _assessment(problem).model_copy(update={
+            "second": problem.model_copy(update={"answers": ["pear"]}),
+        })
+    elif case == "alternate_reading":
+        assert problem.answers == ["two"]
+        problem = problem.model_copy(update={"instruction": "Give the number of books in words or digits."})
+        answer = "2"
+        assessment = _assessment(problem)
+    grade = grade_english(english_prompt(problem), answer, mark, assessment, index=0)
+    assert (grade.outcome, grade.score) == (outcome, score)
+
+
+def test_english_ai_worksheet_resumes_completed_pages_and_retries_only_pending_items(client, runtime):
+    runtime.settings.english_ai_mastery_enabled = True
+    with BytesIO() as output:
+        Image.new("RGB", (192, 192), "white").save(output, "PNG")
+        page_two = output.getvalue()
+    files = [
+        ("files", ("one.png", english_demo_page(), "image/png")),
+        ("files", ("two.png", page_two, "image/png")),
+    ]
+    response = client.post("/api/english/worksheets", files=files)
+    record = response.json()
+    assert response.status_code == 202
+    path = f"/api/english/records/{record['id']}"
+    legacy = english_demo(_photo())
+    apple, grammar, reading, writing = legacy.items
+
+    def page(*items):
+        return legacy.model_copy(update={"version": "2", "items": list(items)})
+
+    def pending(analyzed):
+        return EnglishAnalyzedItem(source=analyzed.source, problem=None, feedback=None, review_timed_out=True)
+
+    def reviewed(analyzed, outcome="correct"):
+        return EnglishAnalyzedItem(source=analyzed.source, problem=None, feedback=None,
+                                   assessment=_assessment(analyzed.problem, outcome=outcome))
+
+    def timeout():
+        return AgentFailure("agent_timeout", retryable=True)
+
+    with runtime.db.transaction() as session:
+        session.get_one(Job, record["jobId"]).attempts = 2
+    agent = Mock(invoke=Mock(side_effect=[page(reviewed(apple), pending(grammar)), timeout()]))
+    assert run_one(runtime, agent, record["jobId"])
+    assert [call.args[0].version for call in agent.invoke.call_args_list] == ["2", "2"]
+    second_image = agent.invoke.call_args.args[0].image_base64
+    assert client.get(path).json()["items"] == []
+    assert _evidence_count(runtime) == 0
+
+    runtime.settings.english_ai_mastery_enabled = False
+    assert client.post("/api/english/worksheets", files=files).json()["id"] == record["id"]
+    assert client.post(f"{path}/retry").status_code == 202
+    agent.invoke.reset_mock(side_effect=True)
+    agent.invoke.return_value = page(pending(reading), writing)
+    assert run_one(runtime, agent, record["jobId"])
+    agent.invoke.assert_called_once()
+    new_request = agent.invoke.call_args.args[0]
+    assert (new_request.version, new_request.image_base64, new_request.review_items) == ("2", second_image, None)
+    original = client.get(path).json()
+    assert original["canRetryReview"]
+    assert [item["outcome"] for item in original["items"]] == ["correct", "undetermined", "undetermined", "feedback"]
+    assert all("reviewSource" not in item for item in original["items"])
+
+    assert client.post(f"{path}/retry", headers=_OTHER).status_code == 404
+    assert client.post(f"{path}/retry").status_code == 202
+    assert client.post(f"{path}/retry").status_code == 409
+    agent.invoke.reset_mock()
+    agent.invoke.side_effect = [page(reviewed(grammar, "incorrect")), timeout()]
+    assert run_one(runtime, agent, record["jobId"])
+    assert [call.args[0].review_items for call in agent.invoke.call_args_list] == [[grammar.source], [reading.source]]
+    during = client.get(path).json()
+    assert during["items"][0] == original["items"][0]
+    assert during["items"][1]["outcome"] == "incorrect"
+    assert during["items"][2]["reason"] == "review_timeout"
+    assert _evidence_count(runtime) == 2
+
+    with runtime.db.transaction() as session:
+        session.get_one(Job, record["jobId"]).available_at = 0
+    agent.invoke.reset_mock(side_effect=True)
+    agent.invoke.return_value = page(reviewed(reading))
+    assert run_one(runtime, agent, record["jobId"])
+    agent.invoke.assert_called_once()
+    assert agent.invoke.call_args.args[0].review_items == [reading.source]
+    result = client.get(path).json()
+    assert result["status"] == "done" and not result["canRetryReview"]
+    assert [item["id"] for item in result["items"]] == [item["id"] for item in original["items"]]
+    assert [item["outcome"] for item in result["items"]] == ["correct", "incorrect", "correct", "feedback"]
+    assert not run_one(runtime, agent, record["jobId"])
+    with runtime.db.session() as session:
+        evidence = session.scalars(select(Evidence)).all()
+        assert len(evidence) == 3
+        assert {e.occurred_at for e in evidence} == {record["createdAt"]}
+        assert {e.verification for e in evidence} == {"ai_review"}
+
+
+def test_english_ai_practice_uses_durable_grading_and_deduplicates_legacy_answers(client, runtime):
+    old = _upload(client)
+    assert run_one(runtime, DemoAgent(), old["jobId"])
+    old_practice = _practice(client, runtime)
+    runtime.settings.english_ai_mastery_enabled = True
+    skipped = old_practice["items"][0]
+    # A practice created before the switch keeps synchronous matching.
+    legacy_answer = client.post(f"/api/english/records/{old_practice['id']}/items/{skipped['id']}/answer",
+                                json={"answer": "apple"}).json()
+    assert legacy_answer["verification"] == "legacy_match" and "assessmentStatus" not in legacy_answer
+
+    generated = english_demo(_request().model_copy(update={"count": 4}))
+    partial = generated.items[1].model_copy(update={
+        "instruction": "Write both fruit names.", "answers": ["apple and pear"],
+    })
+    generated.items[1] = partial
+    created = client.post("/api/english/practices", json={"skill": "english-vocabulary", "count": 4}).json()
+    assert run_one(runtime, Mock(invoke=Mock(return_value=generated)), created["jobId"])
+    path = f"/api/english/records/{created['id']}"
+    items = client.get(path).json()["items"]
+    after_upload = client.get("/api/english/skills").json()[0]
+    assert (after_upload["sampleCount"], after_upload["percent"]) == (1, None)
+    runtime.settings.english_ai_mastery_enabled = False
+
+    answers = ("pear", "apple", "school", "friend")
+    for i, (item, problem, answer) in enumerate(zip(items, generated.items, answers, strict=True)):
+        submit_path = f"{path}/items/{item['id']}/answer"
+        assert item["expected"] is None
+        accepted = client.post(submit_path, json={"answer": answer}).json()
+        assert accepted["assessmentStatus"] == "queued" and accepted["outcome"] is None
+        assert accepted["expected"] is None and accepted["explanation"] is None
+        assert client.get(path).json()["items"][i] == accepted
+        assert client.post(submit_path, json={"answer": answer}).json() == accepted
+        assert client.post(submit_path, json={"answer": "different"}).status_code == 409
+        with runtime.db.session() as session:
+            assessment_job = session.scalar(select(Job).where(Job.english_id == accepted["assessmentId"])).id
+            submitted_at = session.get_one(EnglishRecord, accepted["assessmentId"]).created_at
+        assert client.post(f"/api/english/records/{accepted['assessmentId']}/retry", headers=_OTHER).status_code == 404
+        assessment = _assessment(problem, outcome=["incorrect", "partial", "correct", "correct"][i],
+                                 partial_basis="写对了 apple。" if i == 1 else None)
+        if i == 3:
+            with runtime.db.transaction() as session:
+                session.get_one(Job, assessment_job).attempts = 2
+            unavailable = Mock(invoke=Mock(side_effect=AgentFailure("agent_timeout", retryable=True)))
+            assert run_one(runtime, unavailable, assessment_job)
+            failed = client.get(path).json()["items"][i]
+            assert failed["assessmentStatus"] == "failed" and failed["assessmentCanRetry"]
+            assert failed["expected"] is None
+            assert client.post(f"/api/english/records/{accepted['assessmentId']}/retry").status_code == 202
+            wrong = problem.model_copy(update={"answers": ["friends"]})
+            assessment = assessment.model_copy(update={"first": wrong, "second": wrong})
+        agent = Mock(invoke=Mock(return_value=EnglishGradeResult(
+            version="2", operation="grade_english", provenance=generated.provenance, assessment=assessment,
+        )))
+        assert run_one(runtime, agent, assessment_job)
+        agent.invoke.assert_called_once_with(GradeEnglish(
+            version="2", operation="grade_english", prompt=english_prompt(problem), answer=answer,
+        ))
+        assert not run_one(runtime, agent, assessment_job)
+        result = client.get(path).json()["items"][i]
+        assert result["assessmentStatus"] == "done"
+        if i == 3:
+            assert (result["outcome"], result["reason"], result["expected"]) == (
+                "undetermined", "model_disagreement", None,
+            )
+        else:
+            assert result["verification"] == "ai_review"
+            with runtime.db.session() as session:
+                evidence = session.get_one(Evidence, item["id"])
+                assert (evidence.english_id, evidence.occurred_at) == (created["id"], submitted_at)
+                assert evidence.score == [0, 1, 2][i]
+
+    mastery = client.get("/api/english/skills").json()[0]
+    assert (mastery["sampleCount"], mastery["percent"]) == (3, 83)
+    assert {e["verification"] for e in mastery["evidence"]} == {"legacy_match", "ai_review"}
+    assert {e["englishId"] for e in mastery["evidence"]} == {old["id"], created["id"]}
+    assert all(s["sampleCount"] == 0 for s in client.get("/api/english/skills", headers=_OTHER).json())
+    assert all(s["sampleCount"] == 0 for s in client.get("/api/mastery").json())
+    assert {record["kind"] for record in client.get("/api/english/records").json()} == {"worksheet", "practice"}
+
+
 @pytest.mark.parametrize("agent_request", [_photo(), _request(), ReviewEnglish(
     version="1", operation="review_english",
     prompt=demo_problems(_request("english-writing"))[0].model_dump(include=set(EnglishPrompt.model_fields)),
@@ -340,6 +560,10 @@ def test_english_migration_preserves_existing_math_rows(tmp_path):
                 INSERT INTO english_records(id, owner, kind, document, created_at)
                 VALUES ('english-record', 'demo-a', 'worksheet', '{}', 2)
             """))
+            conn.execute(text("UPDATE english_records SET document = :doc"), {"doc": '{"aiMastery":true}'})
+            with pytest.raises(RuntimeError, match="Preserve AI homework"):
+                command.downgrade(config, "0005")
+            conn.execute(text("UPDATE english_records SET document = '{}'"))
             with pytest.raises(RuntimeError, match="Export and explicitly remove"):
                 command.downgrade(config, "0002")
             assert conn.scalar(text("SELECT COUNT(*) FROM english_records")) == 1

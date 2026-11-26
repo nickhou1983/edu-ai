@@ -28,7 +28,13 @@ from edu_domain.agent_protocol import (
     PAGE_READ_BUDGET_HEADER,
     retry_after_seconds,
 )
-from edu_domain.contracts import MAX_PAGE_BYTES, AgentRequest, AnalysisResult, AnalyzePage
+from edu_domain.contracts import (
+    MAX_PAGE_BYTES,
+    AgentRequest,
+    AnalysisResult,
+    AnalyzePage,
+    EnglishAnalysisResult,
+)
 
 logger = logging.getLogger(__name__)
 _REQUEST = TypeAdapter(AgentRequest)
@@ -153,11 +159,11 @@ def build_host(*, local: bool = False) -> InvocationAgentServerHost:
             job_id = str(UUID(raw_job_id)) if len(raw_job_id) == 36 else "-"
         except ValueError:
             job_id = "-"
-        math_v2 = isinstance(payload, AnalyzePage) and payload.version == "2"
+        extended_budget = payload.version == "2"
         started = monotonic()
         try:
             async with connect(
-                timeout=timeouts.model_timeout_seconds if math_v2 else 45,
+                timeout=timeouts.model_timeout_seconds if extended_budget else 45,
                 operation=payload.operation, job_id=job_id,
             ) as model:
                 page_timeout = timeouts.page_budget(request.headers.get(PAGE_READ_BUDGET_HEADER))
@@ -171,7 +177,7 @@ def build_host(*, local: bool = False) -> InvocationAgentServerHost:
             )
             headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after is not None else None
             return JSONResponse({"error": exc.code}, status_code=503 if exc.retryable else 424, headers=headers)
-        if isinstance(result, AnalysisResult) and any(item.review_timed_out for item in result.items):
+        if isinstance(result, (AnalysisResult, EnglishAnalysisResult)) and any(item.review_timed_out for item in result.items):
             logger.warning("open_review_pending job_id=%s operation=%s elapsed_ms=%d",
                            job_id, payload.operation, (monotonic() - started) * 1000)
         if isinstance(payload, AnalyzePage) and payload.version == "1":

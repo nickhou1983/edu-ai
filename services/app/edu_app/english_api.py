@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from edu_agent.english_demo import english_demo_page
 from edu_app.assets import AssetNotFound, AssetUnavailable
 from edu_app.db import EnglishRecord, Job, new_id, now_ms
-from edu_app.english_jobs import english_evidence
+from edu_app.english_jobs import english_evidence, has_pending_english_review
 from edu_app.jobs import JOB_ERRORS, RETRYABLE_FAILURES
 from edu_app.mastery import overview
 from edu_app.runtime import Runtime
@@ -45,11 +45,13 @@ class EnglishAnswer(Contract):
 
 
 def _info(record: EnglishRecord, job: Job) -> dict:
+    pending_review = record.kind == "worksheet" and has_pending_english_review(record.document)
     return {
         "id": record.id, "kind": record.kind, "skill": record.skill, "createdAt": record.created_at,
         "jobId": job.id, "status": job.status,
         "error": JOB_ERRORS.get(job.error, "任务未完成，请稍后重试。") if job.status == "failed" else None,
         "canRetry": job.status == "failed" and job.error in RETRYABLE_FAILURES and job.manual_retries == 0,
+        "canRetryReview": job.status == "done" and pending_review and job.manual_retries == 0,
     }
 
 
@@ -66,14 +68,34 @@ def _get(session: Session, owner: str, record_id: UUID, *, lock=False):
 
 
 def _public_item(session: Session, record: EnglishRecord, item: dict) -> dict:
+    assessment_id = item.get("assessmentId")
+    assessment_status = None
+    if assessment_id:
+        assessment, assessment_job = session.execute(_query(record.owner).where(
+            EnglishRecord.id == assessment_id, EnglishRecord.kind == "assessment",
+        )).one()
+        assessment_status = _info(assessment, assessment_job)
+        if assessment_job.status == "done":
+            item = {**item, **assessment.document["result"]}
     problem = EnglishProblem.model_validate(item["problem"]) if item.get("problem") else None
-    answered = record.kind == "worksheet" or item["answer"] is not None
+    answered = record.kind == "worksheet" or (
+        item["answer"] is not None and (assessment_status is None or assessment_status["status"] == "done")
+    )
     result = {
         name: item.get(name)
-        for name in ("id", "page", "label", "region", "prompt", "answer", "outcome", "counted", "feedback")
+        for name in (
+            "id", "page", "label", "region", "prompt", "answer", "outcome", "counted", "feedback",
+            "reason", "masterySkill",
+        )
     }
+    result["verification"] = item.get("verification", "legacy_match" if item.get("counted") else None)
     result["expected"] = problem.answers if problem and answered and item["outcome"] != "undetermined" else None
-    result["explanation"] = problem.explanation if problem and answered else None
+    result["explanation"] = (item.get("explanation") or problem.explanation) if problem and answered else None
+    if assessment_status:
+        result.update(
+            assessmentId=assessment_id, assessmentStatus=assessment_status["status"],
+            assessmentError=assessment_status["error"], assessmentCanRetry=assessment_status["canRetry"],
+        )
     result["feedbackStatus"] = result["feedbackError"] = None
     if feedback_id := item.get("feedbackId"):
         row = session.execute(_query(record.owner).where(EnglishRecord.id == feedback_id)).one()
@@ -93,7 +115,7 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
     @router.get("/skills")
     def skills(owner: str = require_owner):
         with runtime.db.session() as session:
-            result = overview(session, owner, ENGLISH_SKILLS)
+            result = overview(session, owner, ENGLISH_SKILLS, subject="english", include_ai=True)
             for item in result:
                 item["hint"] = ENGLISH_SKILL_BY_ID[item["id"]].hint
                 if item["id"] not in ENGLISH_OBJECTIVE_SKILLS:
@@ -145,7 +167,7 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
             raise
         try:
             with runtime.db.transaction() as session:
-                record.document = {"pages": pages, "items": []}
+                record.document = {"pages": pages, "items": [], "aiMastery": runtime.settings.english_ai_mastery_enabled}
                 session.add(record)
                 session.flush()
                 job = Job(english_id=record.id)
@@ -168,10 +190,12 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
     @router.post("/practices", status_code=202)
     def generate(body: CreateEnglishPractice, owner: str = require_owner):
         with runtime.db.transaction() as session:
-            current = next(s for s in overview(session, owner, ENGLISH_SKILLS) if s["id"] == body.skill)
+            current = next(s for s in overview(session, owner, ENGLISH_SKILLS, subject="english", include_ai=True)
+                           if s["id"] == body.skill)
             record = EnglishRecord(owner=owner, kind="practice", skill=body.skill, document={
                 "count": body.count, "difficulty": body.difficulty, "items": [],
                 "purpose": "diagnose" if current["status"] == "insufficient" else "strengthen",
+                "aiMastery": runtime.settings.english_ai_mastery_enabled,
             })
             session.add(record)
             session.flush()
@@ -184,7 +208,8 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
     def history(owner: str = require_owner):
         with runtime.db.session() as session:
             return [_info(*row) for row in session.execute(
-                _query(owner).where(EnglishRecord.kind != "feedback").order_by(EnglishRecord.created_at.desc()).limit(25)
+                _query(owner).where(EnglishRecord.kind.in_(("worksheet", "practice")))
+                .order_by(EnglishRecord.created_at.desc()).limit(25)
             )]
 
     @router.get("/records/{record_id}")
@@ -219,8 +244,11 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
         with runtime.db.transaction() as session:
             record, _ = _get(session, owner, record_id)
             job = session.scalars(select(Job).where(Job.english_id == record.id).with_for_update()).one()
-            if not _info(record, job)["canRetry"]:
+            info = _info(record, job)
+            if not info["canRetry"] and not info["canRetryReview"]:
                 raise HTTPException(409, "此任务不能再次处理，请检查后重新创建。")
+            if info["canRetryReview"]:
+                record.document = {**record.document, "pendingReviewRetry": True}
             job.status, job.error, job.attempts = "queued", None, 0
             job.available_at, job.dispatched_at = now_ms(), None
             job.manual_retries += 1
@@ -261,6 +289,15 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
                 session.add(Job(english_id=feedback.id))
                 item["feedbackId"] = feedback.id
                 item["outcome"] = "feedback"
+            elif document.get("aiMastery"):
+                assessment = EnglishRecord(
+                    owner=owner, kind="assessment", skill=problem.skill,
+                    document={"practiceId": record.id, "itemId": item["id"]},
+                )
+                session.add(assessment)
+                session.flush()
+                session.add(Job(english_id=assessment.id))
+                item["assessmentId"] = assessment.id
             else:
                 item["outcome"] = "correct" if english_correct(problem, value) else "incorrect"
                 item["counted"] = True

@@ -15,6 +15,7 @@ from edu_domain.contracts import (
     EnglishProblem,
     EnglishReadItem,
     GenerateEnglish,
+    GradeEnglish,
     Region,
     ReviewEnglish,
 )
@@ -85,7 +86,9 @@ def english_demo_page() -> bytes:
     return output.getvalue()
 
 
-def english_demo(request: AnalyzeEnglish | GenerateEnglish | ReviewEnglish):
+def english_demo(request: AnalyzeEnglish | GenerateEnglish | ReviewEnglish | GradeEnglish):
+    if request.version == "2":
+        raise DemoImageOnly
     if isinstance(request, GenerateEnglish):
         return EnglishPracticeResult(
             version="1", operation=request.operation, provenance=DEMO_VERSION, items=demo_problems(request),

@@ -3,9 +3,18 @@ import unicodedata
 from dataclasses import dataclass
 from hashlib import sha256
 
-from edu_domain.contracts import EnglishProblem, EnglishPrompt, EnglishSkillId
+from edu_domain.contracts import (
+    EnglishAssessment,
+    EnglishProblem,
+    EnglishPrompt,
+    EnglishSkillId,
+    Mark,
+    Outcome,
+)
 
 ENGLISH_RULES = "english-v1"
+ENGLISH_AI_PROMPT = "english-ai-mastery-v1"
+_SCORES = {"correct": 2, "partial": 1, "incorrect": 0}
 
 
 @dataclass(frozen=True)
@@ -44,7 +53,15 @@ def english_correct(problem: EnglishProblem, answer: str) -> bool:
     value = normalized_answer(answer)
     if problem.mode == "choice":
         value = value.upper()
-    return value in {normalized_answer(expected) for expected in problem.answers}
+    return value in accepted_answers(problem)
+
+
+def accepted_answers(problem: EnglishProblem) -> set[str]:
+    return {normalized_answer(answer) for answer in problem.answers}
+
+
+def english_prompt(problem: EnglishProblem) -> EnglishPrompt:
+    return EnglishPrompt.model_validate(problem.model_dump(include=set(EnglishPrompt.model_fields)))
 
 
 def english_outcome(problem: EnglishProblem | None, answer: str | None, mark: str) -> str:
@@ -57,3 +74,60 @@ def english_outcome(problem: EnglishProblem | None, answer: str | None, mark: st
     if not answer or not answer.strip():
         return "undetermined"
     return "correct" if english_correct(problem, answer) else "incorrect"
+
+
+@dataclass(frozen=True)
+class EnglishGrade:
+    outcome: Outcome
+    reason: str | None = None
+    explanation: str | None = None
+    reference: EnglishProblem | None = None
+    mastery_skill: EnglishSkillId | None = None
+
+    @property
+    def score(self) -> int | None:
+        return _SCORES.get(self.outcome) if self.mastery_skill else None
+
+
+def grade_english(
+    prompt: EnglishPrompt, answer: str | None, mark: Mark, assessment: EnglishAssessment | None,
+    *, index: int, published: EnglishProblem | None = None,
+) -> EnglishGrade:
+    if mark == "unclear":
+        return EnglishGrade("undetermined", "answer_unclear")
+    if assessment is None:
+        return EnglishGrade("undetermined", "missing_review")
+    first, second, review = assessment.first, assessment.second, assessment.review
+    if first is None or second is None:
+        return EnglishGrade("undetermined", "missing_reference")
+    references = (first, second) if published is None else (first, second, published)
+    if any(english_prompt(reference) != prompt for reference in references):
+        return EnglishGrade("undetermined", "source_mismatch")
+    if any(accepted_answers(first) != accepted_answers(reference) for reference in references[1:]):
+        return EnglishGrade("undetermined", "model_disagreement")
+    if review is None or review.index != index:
+        return EnglishGrade("undetermined", "missing_review")
+    if not review.source_consistent:
+        return EnglishGrade("undetermined", "source_mismatch")
+    if not review.references_agree:
+        return EnglishGrade("undetermined", "model_disagreement")
+    if mark == "blank" and not answer and review.outcome == "blank":
+        return EnglishGrade("blank")
+    if mark != "present" or not answer or not answer.strip() or review.outcome == "blank":
+        return EnglishGrade("undetermined", "answer_unclear")
+    if review.outcome == "undetermined" or not review.explanation.strip():
+        return EnglishGrade("undetermined", "review_inconclusive")
+    if prompt.mode == "choice" and normalized_answer(answer).upper() not in list("ABCD"[:len(prompt.choices)]):
+        return EnglishGrade("undetermined", "answer_unclear")
+    matched = english_correct(first, answer)
+    if (prompt.mode == "choice" and (review.outcome == "partial" or matched != (review.outcome == "correct"))) or (
+        matched and review.outcome != "correct"
+    ):
+        return EnglishGrade("undetermined", "review_disagreement")
+    if review.outcome == "partial" and not (review.partial_basis or "").strip():
+        return EnglishGrade("undetermined", "invalid_partial")
+    explanation = review.explanation
+    if review.outcome == "partial":
+        explanation = f"{explanation} {review.partial_basis}"
+    mastery = review.mastery_skill if review.mastery_skill == prompt.skill and (review.mastery_basis or "").strip() else None
+    return EnglishGrade(review.outcome, explanation=explanation, reference=first, mastery_skill=mastery)

@@ -188,6 +188,98 @@ def test_host_does_not_start_sdk_model_instrumentation_or_content_export(monkeyp
     setup.assert_not_called()
 
 
+def test_english_v2_host_uses_blind_references_and_preserves_a_completed_batch(hosted_model, tmp_path):
+    from openai import APITimeoutError
+
+    from edu_agent.english_demo import demo_problems
+    from edu_app.agent_client import HttpAgent
+    from edu_app.config import Settings
+    from edu_domain.contracts import (
+        MAX_AI_REVIEW_BATCH,
+        AnalyzeEnglish,
+        EnglishObjectiveReview,
+        EnglishObjectiveReviews,
+        EnglishReadItem,
+        EnglishReadPage,
+        EnglishSolution,
+        EnglishSolutions,
+        GenerateEnglish,
+        GradeEnglish,
+        Region,
+    )
+    from edu_domain.english import english_prompt, grade_english
+
+    host, responses, options = hosted_model
+    problem = demo_problems(GenerateEnglish(
+        version="1", operation="generate_english", difficulty="foundation", skill="english-vocabulary", count=3,
+    ))[0]
+    prompt = english_prompt(problem).model_copy(update={"instruction": "Complete the common fruit name: a__le."})
+    student_answer = "synthetic-student-answer"
+    source = EnglishReadItem(
+        label="1", region=Region(left=10, top=10, right=600, bottom=100), prompt=prompt,
+        readable=True, mark="present", answer=student_answer,
+    )
+    sources = [source.model_copy(update={"label": str(i + 1)}) for i in range(MAX_AI_REVIEW_BATCH + 1)]
+    calls = []
+
+    async def response(**kwargs):
+        name = kwargs["text"]["format"]["name"]
+        content = kwargs["input"][0]["content"]
+        if name == "EnglishReadPage":
+            assert content[1]["type"] == "input_image"
+            return _completed(EnglishReadPage(quality="readable", items=sources))
+        items = json.loads(content[0]["text"])
+        calls.append((name, bool(content[1:])))
+        if name == "EnglishSolutions":
+            assert len(content) == 1
+            assert all(set(item) == {"index", "prompt"} for item in items)
+            assert student_answer not in content[0]["text"]
+            if items[0]["index"] == MAX_AI_REVIEW_BATCH:
+                raise APITimeoutError(request=httpx.Request("POST", "https://model.example.invalid/"))
+            return _completed(EnglishSolutions(solutions=[
+                EnglishSolution(index=item["index"], unambiguous=True, answers=["apple"], explanation="Fruit.")
+                for item in items
+            ]))
+        assert name == "EnglishObjectiveReviews"
+        assert all(item["answer"] == student_answer and len(item["references"]) == 2 for item in items)
+        assert all("region" in item for item in items) == bool(content[1:])
+        return _completed(EnglishObjectiveReviews(reviews=[
+            EnglishObjectiveReview(
+                index=item["index"], outcome="incorrect", source_consistent=True, references_agree=True,
+                explanation="答案没有写出水果名称。", partial_basis=None,
+                mastery_skill=prompt.skill, mastery_basis="根据词汇作答判断。",
+            )
+            for item in items
+        ]))
+
+    responses.side_effect = response
+    photo = AnalyzeEnglish(version="2", operation="analyze_english", image_base64=_photo_request().image_base64)
+    practice = GradeEnglish(version="2", operation="grade_english", prompt=prompt, answer=student_answer)
+    assert "review_items" not in photo.model_dump()
+    settings = Settings(_env_file=None, mode="local", data_dir=tmp_path, agent_url="http://127.0.0.1:8088/invocations")
+    client = HttpAgent(settings, None)
+    try:
+        with TestClient(host.build_host(local=True)) as remote:
+            def forward(request: httpx.Request) -> httpx.Response:
+                assert request.headers[PAGE_READ_BUDGET_HEADER] == str(settings.agent_timeout_seconds)
+                return remote.post("/invocations", content=request.content, headers=dict(request.headers))
+
+            timeout = client.client.timeout
+            client.client.close()
+            client.client = httpx.Client(timeout=timeout, transport=httpx.MockTransport(forward))
+            result = client.invoke(photo)
+            graded = client.invoke(practice)
+    finally:
+        client.close()
+    assert not result.items[0].review_timed_out
+    assert result.items[0].assessment.review.outcome == "incorrect"
+    assert result.items[-1].review_timed_out and result.items[-1].assessment is None
+    assert grade_english(prompt, student_answer, "present", graded.assessment, index=0).score == 0
+    assert calls.count(("EnglishObjectiveReviews", True)) == calls.count(("EnglishObjectiveReviews", False)) == 1
+    assert calls.count(("EnglishSolutions", False)) == 6
+    assert all(call.kwargs["timeout"] == 90 for call in options.call_args_list)
+
+
 def test_open_agent_blind_solvers_never_receive_student_answers(open_math_item):
     from edu_domain.contracts import OpenReviews, OpenSolutions
     from edu_domain.grading import grade_item

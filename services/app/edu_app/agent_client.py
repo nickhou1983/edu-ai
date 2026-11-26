@@ -23,9 +23,11 @@ from edu_domain.contracts import (
     DiscoverKnowledge,
     EnglishAnalysisResult,
     EnglishFeedbackResult,
+    EnglishGradeResult,
     EnglishPracticeResult,
     GenerateEnglish,
     GenerateKnowledge,
+    GradeEnglish,
     KnowledgeDiscoveryResult,
     KnowledgeFeedbackResult,
     KnowledgePracticeResult,
@@ -81,7 +83,7 @@ class HttpAgent:
             headers["Authorization"] = f"Bearer {token.token}"
         try:
             timeout = self.client.timeout
-            if isinstance(request, AnalyzePage) and request.version == "2":
+            if request.version == "2":
                 if timeout.read is not None:
                     headers[PAGE_READ_BUDGET_HEADER] = str(int(timeout.read))
             else:
@@ -97,7 +99,7 @@ class HttpAgent:
         if not response.is_success:
             self._raise_http_failure(
                 response, fields, (monotonic() - started) * 1000,
-                review_only=isinstance(request, AnalyzePage) and request.review_items is not None,
+                review_only=isinstance(request, (AnalyzePage, AnalyzeEnglish)) and request.review_items is not None,
             )
         if isinstance(request, DiscoverKnowledge):
             schema = KnowledgeDiscoveryResult
@@ -111,6 +113,8 @@ class HttpAgent:
             schema = EnglishPracticeResult
         elif isinstance(request, ReviewEnglish):
             schema = EnglishFeedbackResult
+        elif isinstance(request, GradeEnglish):
+            schema = EnglishGradeResult
         else:
             schema = AnalysisResult if isinstance(request, AnalyzePage) else PracticeResult
         try:

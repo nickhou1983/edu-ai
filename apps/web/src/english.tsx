@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  describeError, jsonBody, masteryNames, pending, type Api, type JobRecord, type Mastery, type Status,
+  describeError, jsonBody, masteryNames, outcomeNames, pending, type Api, type JobRecord, type Mastery, type Outcome, type Status,
 } from "./api";
 import { dateText, Empty, Icon, Problem, statusText, StudyNotebook, useRemote } from "./ui";
 
@@ -9,12 +9,14 @@ type Feedback = { strengths: string[]; improvements: string[]; suggested_respons
 type Prompt = { skill: string; mode: "choice" | "fill" | "open"; instruction: string; context: string; choices: string[] };
 type EnglishItem = {
   id: string; page: number | null; label: string | null; prompt: Prompt | null;
-  answer: string | null; outcome: "correct" | "incorrect" | "blank" | "undetermined" | "feedback" | null;
+  answer: string | null; outcome: Outcome | "feedback" | null;
   counted: boolean; feedback: Feedback | null; expected: string[] | null; explanation: string | null;
+  verification?: "ai_review" | "legacy_match" | "unresolved" | null; reason?: string | null; masterySkill?: string | null;
   feedbackId?: string; feedbackStatus: Status | null; feedbackError: string | null; feedbackCanRetry?: boolean;
+  assessmentId?: string; assessmentStatus?: Status; assessmentError?: string | null; assessmentCanRetry?: boolean;
 };
 type EnglishRecord = JobRecord & {
-  kind: "worksheet" | "practice" | "feedback"; skill: string | null; canRetry: boolean;
+  kind: "worksheet" | "practice"; skill: string | null; canRetry: boolean; canRetryReview?: boolean;
 };
 type EnglishDetail = EnglishRecord & {
   pages: number[]; items: EnglishItem[]; retakePages: number[];
@@ -28,12 +30,18 @@ const skillEnglish: Record<string, string> = {
   "english-vocabulary": "Vocabulary", "english-grammar": "Grammar", "english-reading": "Reading",
   "english-writing": "Writing", "english-listening-text": "Listening · text", "english-speaking-text": "Speaking · text",
 };
-const labels = {
-  correct: "正确", incorrect: "错误", blank: "未作答", undetermined: "无法判定", feedback: "文字反馈",
+const labels = { ...outcomeNames, feedback: "文字反馈" };
+const reviewNotes: Record<string, string> = {
+  answer_unclear: "无法可靠识别作答。",
+  source_mismatch: "题目或作答与复核时看到的内容不一致。",
+  model_disagreement: "独立参考答案不一致，无法可靠判分。",
+  review_disagreement: "复核结论与参考答案不一致。",
+  invalid_partial: "没有足够依据判断哪些部分正确。",
 };
+const processing = (status?: Status | null) => status === "queued" || status === "running";
 const pollHistory = (records: EnglishRecord[]) => records.some(pending);
 const pollDetail = (record: EnglishDetail) => pending(record)
-  || record.items.some((item) => item.feedbackStatus === "queued" || item.feedbackStatus === "running");
+  || record.items.some((item) => processing(item.feedbackStatus) || processing(item.assessmentStatus));
 
 export function EnglishWorkspace({ api, sample, sampleOnly, id, focused, open, focus }: {
   api: Api; sample: boolean; sampleOnly: boolean; id?: string; focused?: string;
@@ -132,7 +140,7 @@ export function EnglishWorkspace({ api, sample, sampleOnly, id, focused, open, f
     </div>
     <section id="english-skills" className="unit-section">
       <div className="section-heading"><h2>英语能力地图</h2><span className="muted small">客观证据与表达建议，分开记录</span></div>
-      <p className="muted small">只汇总词汇、语法、阅读的最近 10 道不同题的有效作答；少于 3 道不显示百分比。AI 参考答案仍需核对。</p>
+      <p className="muted small">每个考点取最近 10 道不同题的首次有效作答，正确、部分正确、错误分别计 2、1、0 分。少于 3 道不显示百分比。</p>
       {skills.error && <Problem retry={skills.reload}>{skills.error}</Problem>}
       {!skills.data && !skills.error && <p role="status">正在读取英语学习记录…</p>}
       <div className="english-skill-grid">{skills.data?.map((skill) => <article className="panel" key={skill.id}>
@@ -151,7 +159,8 @@ export function EnglishWorkspace({ api, sample, sampleOnly, id, focused, open, f
         }}>练习{skill.title} →</button>
         {skill.evidence.length > 0 && <details><summary>查看英语作答依据</summary>
           <ul className="evidence-list">{skill.evidence.map((entry) => <li key={entry.itemId}>
-            <span>{dateText(entry.occurredAt)} · {entry.score === 2 ? "正确" : "错误"}</span>
+            <span>{dateText(entry.occurredAt)} · {entry.score === 2 ? "正确" : entry.score === 1 ? "部分正确" : "错误"}
+              {" · "}{entry.verification === "ai_review" ? "AI 复核" : "旧版答案匹配"}</span>
             <button className="text-button" onClick={() => { if (entry.englishId) open(entry.englishId); }}>查看原记录</button>
           </li>)}</ul>
         </details>}
@@ -200,6 +209,10 @@ function EnglishRecordView({ api, id, back }: { api: Api; id: string; back: () =
       <Problem>{record.error ?? "英语任务未完成。"}</Problem>
       {record.canRetry && <button className="button secondary" disabled={retrying} onClick={() => void retry()}>重新处理英语任务</button>}
     </>}
+    {record?.canRetryReview && <div className="notice advisory">
+      部分题目复核超时。只重试待复核题，已完成的结果会保留。
+      {" "}<button className="button secondary" disabled={retrying} onClick={() => void retry()}>重试待复核题</button>
+    </div>}
     {!!record?.retakePages.length && <p className="notice advisory">第 {record.retakePages.join("、")} 页未能清晰识别；请裁掉无关内容，重新拍摄上传，未据此计入掌握度。</p>}
     {record && <div className={record.kind === "worksheet" ? "english-report-grid" : ""}>
       {record.pages.length > 0 && <section className="panel"><h2>核对原图</h2>
@@ -246,6 +259,8 @@ function EnglishItemCard({ api, record, item, index, reload, retry, retrying }: 
   const [error, setError] = useState("");
   const prompt = item.prompt;
   const unsubmitted = record.kind === "practice" && item.answer === null;
+  const pendingReview = item.reason === "review_timeout";
+  const assessmentId = item.assessmentId;
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try {
@@ -257,7 +272,7 @@ function EnglishItemCard({ api, record, item, index, reload, retry, retrying }: 
   return <article className="panel english-question">
     <div className="section-heading">
       <p className="eyebrow section-code">英语第 {item.label ?? index + 1} 题{item.page ? ` · 第 ${item.page} 页` : ""}</p>
-      {item.outcome && <span className={`pill ${item.outcome}`}>{labels[item.outcome]}</span>}
+      {item.outcome && <span className={`pill ${item.outcome}`}>{pendingReview ? "待复核" : labels[item.outcome]}</span>}
     </div>
     <h2>{prompt?.instruction ?? "题目无法可靠转写"}</h2>
     {prompt?.context && <blockquote className="english-passage" lang="en">{prompt.context}</blockquote>}
@@ -279,16 +294,30 @@ function EnglishItemCard({ api, record, item, index, reload, retry, retrying }: 
       </>}
       <p className="muted small">{prompt.mode === "open"
         ? "提交后获取 AI 文字建议，不计分、不计入客观掌握度。"
-        : "先独立作答，再查看参考。保留必要的大小写和标点。"}</p>
+        : "先独立作答，判分后再查看参考。保留必要的大小写和标点。"}</p>
       <button className="button primary" disabled={busy || !answer.trim()}>{busy ? "正在提交…" : "提交英语作答"}</button>
     </form>}
     {error && <Problem>{error}</Problem>}
     {item.answer !== null && <div className="english-answer"><span className="muted small">你的作答</span><p lang="en">{item.answer}</p></div>}
     {!!item.expected?.length && <p className="english-reference">AI 参考：<strong lang="en">{item.expected.join(" / ")}</strong></p>}
     {item.explanation && item.outcome !== "feedback" && <p className="muted small">{item.explanation}</p>}
-    {item.outcome === "undetermined" && <p className="muted">识别或参考答案不足以可靠判定，本题不计入掌握度。</p>}
+    {pendingReview
+      ? <p className="muted">复核超时，尚未计入掌握度。</p>
+      : item.reason === "feedback_unavailable"
+        ? <p className="muted">这次未能生成文字建议；表达题不计分。</p>
+        : item.outcome === "undetermined" && <p className="muted">
+          {(item.reason && reviewNotes[item.reason]) || "识别或参考答案不足以可靠判定。"}本题不计入掌握度。
+        </p>}
+    {item.verification === "ai_review" && <p className="muted small">AI 复核
+      {item.masterySkill ? ` · 主考点：${skillNames[item.masterySkill]}` : " · 缺少明确考点依据，不计入掌握度"}</p>}
     {item.counted && <p className="muted small">作为客观作答证据记录；同题只计第一次有效作答。</p>}
-    {item.feedbackStatus && (item.feedbackStatus === "queued" || item.feedbackStatus === "running") &&
+    {processing(item.assessmentStatus) && <p className="notice progress" role="status">AI 正在判分…</p>}
+    {item.assessmentStatus === "failed" && <>
+      <Problem>{item.assessmentError ?? "暂时未能完成判分。"}</Problem>
+      {item.assessmentCanRetry && assessmentId && <button className="button secondary" disabled={retrying}
+        onClick={() => retry(assessmentId)}>重新判分</button>}
+    </>}
+    {processing(item.feedbackStatus) &&
       <p className="notice progress" role="status">正在生成文字建议，不计入客观掌握度…</p>}
     {item.feedbackStatus === "failed" && <>
       <Problem>{item.feedbackError ?? "暂时未能生成文字建议。"}</Problem>

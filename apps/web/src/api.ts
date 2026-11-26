@@ -69,7 +69,7 @@ export interface Evidence {
   englishId?: string | null;
   score: number;
   occurredAt: number;
-  verification?: "rules" | "ai_review";
+  verification?: "rules" | "ai_review" | "legacy_match";
 }
 
 export interface Mastery {

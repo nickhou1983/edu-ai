@@ -170,7 +170,7 @@ class MathAgent:
         if not isinstance(request, (AnalyzePage, GeneratePractice)):
             from edu_agent.english_service import EnglishAgent
 
-            return await EnglishAgent(self.model, self.version).invoke(request)
+            return await EnglishAgent(self.model, self.version, page_timeout=self.page_timeout).invoke(request)
         if isinstance(request, GeneratePractice):
             candidates, model = await self.model.infer(
                 PracticeCandidates,

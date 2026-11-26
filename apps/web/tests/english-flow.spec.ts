@@ -75,6 +75,66 @@ test("English uploads, objective mastery and all text-only expression modules", 
   expect(errors).toEqual([]);
 });
 
+test("English AI grading waits for the result and can retry a timed-out report in place", async ({ page }) => {
+  const prompt = {
+    skill: "english-vocabulary", mode: "fill", instruction: "Name both fruits from the word list.",
+    context: "", choices: [],
+  };
+  const baseItem = {
+    id: "question", label: "1", prompt, answer: null, outcome: null, counted: false,
+    expected: null, explanation: null, feedbackStatus: null,
+  };
+  const detail = {
+    id: "record", status: "done", pages: [], retakePages: [], provenance: [],
+    items: [baseItem],
+  };
+  let state: "idle" | "queued" | "done" = "idle";
+  await page.route("**/api/english/records/record/items/question/answer", async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ answer: "apple" });
+    state = "queued";
+    await route.fulfill({ json: { ...baseItem, answer: "apple", assessmentStatus: "queued" } });
+  });
+  await page.route("**/api/english/records/record", async (route) => {
+    const item = state === "idle" ? baseItem : state === "queued"
+      ? { ...baseItem, answer: "apple", assessmentStatus: "queued" }
+      : { ...baseItem, answer: "apple", outcome: "partial", assessmentStatus: "done", counted: true,
+        expected: ["apple and pear"], verification: "ai_review", masterySkill: "english-vocabulary" };
+    await route.fulfill({ json: { ...detail, kind: "practice", items: [item] } });
+  });
+  await page.goto("/?view=english&id=record");
+  await page.getByLabel("英语第 1 题作答").fill("apple");
+  await page.getByRole("button", { name: "提交英语作答" }).click();
+  await expect(page.getByText("AI 正在判分…")).toBeVisible();
+  await expect(page.getByText("AI 参考：")).toHaveCount(0);
+  state = "done";
+  await expect(page.getByText("部分正确", { exact: true })).toBeVisible();
+  await expect(page.getByText("apple and pear", { exact: true })).toBeVisible();
+  await expect(page.getByText("AI 复核 · 主考点：词汇与词形")).toBeVisible();
+
+  let reviewed = false;
+  const finished = { ...baseItem, answer: "apple and pear", outcome: "correct" };
+  await page.route("**/api/english/records/report", async (route) => {
+    await route.fulfill({ json: {
+      ...detail, id: "report", kind: "worksheet", canRetryReview: !reviewed,
+      items: [finished, {
+        ...baseItem, label: "2", id: "pending",
+        outcome: reviewed ? "incorrect" : "undetermined", reason: reviewed ? null : "review_timeout",
+      }],
+    } });
+  });
+  await page.route("**/api/english/records/report/retry", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    reviewed = true;
+    await route.fulfill({ status: 202, json: { id: "report" } });
+  });
+  await page.goto("/?view=english&id=report");
+  await expect(page.getByText("待复核", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "重试待复核题" }).click();
+  await expect(page.getByText("待复核", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("正确", { exact: true })).toBeVisible();
+  await expect(page.getByText("错误", { exact: true })).toBeVisible();
+});
+
 test.describe("English phone layout", () => {
   const { viewport, deviceScaleFactor, hasTouch, isMobile } = devices["Pixel 7"];
   test.use({ viewport, deviceScaleFactor, hasTouch, isMobile });
