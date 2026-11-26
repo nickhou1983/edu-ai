@@ -80,7 +80,11 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 ## 全 AI 作业批改与掌握度估计
 
-这一版本新增迁移 `0006`，为作业保留上传时的判分模式，并区分规则和 AI 证据。经部署审批后，先应用迁移，再更新 Worker、API 和 Agent；更新期间保持 `mathAiMasteryEnabled=false`。常规请求不发送 `ai_only` 字段；开启后，新作业使用支持 `ai_only=true` 的数学协议 `2`。不能在旧 Agent 或旧 Worker 尚在运行时开启。
+源提交 `beadedadf60adde2b166613ed0668190b19b76e1` 已发布到现有合成测试环境。应用 ACR 构建 `cpn`、摘要 `sha256:444c73ac87d17ee2285503a5d7f8c7c140909a5e9d9269dda75f7bf205670c68`；Agent 构建 `cpm`、摘要 `sha256:6d6f036720efae529900a2633b4ffe18fe8961d26935a88efa37e25a9a11142c`。迁移执行 `job-init-edu-ai-test-c2d102-3hhs4fe` 成功，API 就绪版本为 `0000009`，Worker 使用同版镜像，Hosted Agent `10` 已启用。全 AI 开关为关闭，原有待复核重试入口保持开启；模型、网络和权限未变更。
+
+对 Agent `10` 进行了一次 `ai_only=true` 的真实合成题调用：`(-8)+3` 的作答 `-5` 判为正确并归入「有理数加减」，`2×(-7)` 的作答 `14` 判为错误并归入「有理数乘除」。API 健康检查、匿名访问拒绝和前端资源核对通过。此调用没有经登录上传、Worker 或线上掌握度写入，不等同于全链路验收或判分质量评估；未运行新的批量评估。
+
+这一版本新增迁移 `0006`，为作业保留上传时的判分模式，并区分规则和 AI 证据。发布顺序为迁移、API、Worker、Agent；更新期间保持 `mathAiMasteryEnabled=false`。常规请求不发送 `ai_only` 字段；开启后，新作业使用支持 `ai_only=true` 的数学协议 `2`。不能在旧 Agent 或旧 Worker 尚在运行时开启。
 
 用带人工答案的合成样卷对比误判、漏判和耗时，覆盖基础题、复合题、模糊作答和多页超时。核对新报告的主考点、重传去重、原报告内重试，以及知识点地图的来源标记和旧规则练习。准备切换时，用 `phase=api` 和 `mathAiMasteryEnabled=true` 启用新数学作业。已保存的历史报告、证据和英语流程不回填。
 
