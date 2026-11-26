@@ -36,8 +36,8 @@ function FeedbackPanel({ value }: { value: Feedback }) {
   </div>;
 }
 
-export function KnowledgeWorkspace({ api, subject, id, open, learn }: {
-  api: Api; subject: Subject; id?: string; open: (id?: string) => void; learn: (point: Point) => void;
+export function KnowledgeWorkspace({ api, subject, id, focused, open, learn }: {
+  api: Api; subject: Subject; id?: string; focused?: string; open: (id?: string) => void; learn: (point: Point) => void;
 }) {
   const directory = useRemote<{ canManage: boolean; points: Point[] }>(api, `/knowledge-points?subject=${subject}`);
   const history = useRemote<Activity[]>(api, `/knowledge-activities?subject=${subject}`, pendingHistory);
@@ -74,7 +74,7 @@ export function KnowledgeWorkspace({ api, subject, id, open, learn }: {
   }
 
   if (id) return <KnowledgeDetail api={api} id={id} back={() => open()} learn={practice} actionError={error} busy={busy} />;
-  const points = directory.data?.points.filter((point) =>
+  const points = directory.data?.points.filter((point) => (!focused || point.id === focused) &&
     `${point.title} ${point.unit} ${point.description}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   return <section className="knowledge-workspace">
     <div className="page-heading"><div><p className="eyebrow">共同的课程 · 私人的学习记录</p>
@@ -89,9 +89,11 @@ export function KnowledgeWorkspace({ api, subject, id, open, learn }: {
     {directory.error && <Problem retry={directory.reload}>{directory.error}</Problem>}
     <div className="knowledge-layout">
       <div>
-        <label className="knowledge-search" htmlFor="knowledge-search">查找知识点
-          <input id="knowledge-search" value={search} onChange={(event) => setSearch(event.target.value)}
-            placeholder="输入名称或章节" /></label>
+        {focused ? <button className="text-button" onClick={() => open()}>查看全部知识点</button>
+          : <label className="knowledge-search" htmlFor="knowledge-search">查找知识点
+            <input id="knowledge-search" value={search} onChange={(event) => setSearch(event.target.value)}
+              placeholder="输入名称或章节" />
+          </label>}
         {!directory.data && !directory.error && <p role="status">正在读取共享目录…</p>}
         {points?.length === 0 && <Empty title="没有匹配的知识点">换一个关键词，或由教师添加新的知识点。</Empty>}
         <div className="knowledge-grid">{points?.map((point) => <article className="panel knowledge-card" key={point.id}>

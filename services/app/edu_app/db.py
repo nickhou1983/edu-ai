@@ -14,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     event,
+    false,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import make_url
@@ -48,6 +49,7 @@ class Submission(Base):
     digest: Mapped[bytes] = mapped_column(LargeBinary(32))
     created_at: Mapped[int] = mapped_column(BigInteger, default=now_ms)
     revision: Mapped[int] = mapped_column(Integer, default=0)
+    ai_mastery: Mapped[bool] = mapped_column(server_default=false())
 
 
 class Page(Base):
@@ -195,6 +197,7 @@ class Evidence(Base):
     __table_args__ = (
         CheckConstraint("score BETWEEN 0 AND 2", name="ck_evidence_score"),
         Index("ix_evidence_owner_skill_problem", "owner", "skill", "problem_key", "occurred_at"),
+        Index("ix_evidence_owner_problem", "owner", "problem_key", "skill"),
         Index("ix_evidence_submission", "submission_id"),
     )
     source_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -202,6 +205,7 @@ class Evidence(Base):
     skill: Mapped[str] = mapped_column(String(32))
     problem_key: Mapped[str] = mapped_column(String(64))
     score: Mapped[int] = mapped_column(Integer)
+    verification: Mapped[str] = mapped_column(String(16), server_default="rules")
     occurred_at: Mapped[int] = mapped_column(BigInteger)
     submission_id: Mapped[str | None] = mapped_column(ForeignKey("submissions.id", ondelete="CASCADE"))
     practice_id: Mapped[str | None] = mapped_column(ForeignKey("practice_sets.id", ondelete="CASCADE"))

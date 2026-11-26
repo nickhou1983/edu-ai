@@ -2,12 +2,14 @@ import asyncio
 import json
 from base64 import b64decode
 from binascii import Error as Base64Error
+from itertools import batched
 from typing import Literal, Protocol, TypeVar
 
 from pydantic import BaseModel
 
 from edu_domain.agent_protocol import MODEL_TIMEOUT_CODES
 from edu_domain.contracts import (
+    MAX_AI_REVIEW_BATCH,
     MAX_PAGE_BYTES,
     AgentRequest,
     AgentResult,
@@ -26,6 +28,7 @@ from edu_domain.grading import grade_item
 from edu_domain.math import MathError, matches_printed_target, verify
 
 PROMPT_VERSION = "math-feedback-v2"
+AI_MASTERY_PROMPT_VERSION = "math-ai-mastery-v1"
 DEFAULT_PAGE_TIMEOUT_SECONDS = 420
 _SCHEMA_ANNOTATIONS = {
     "title",
@@ -154,8 +157,8 @@ class MathAgent:
         self.version = version
         self.page_timeout = page_timeout
 
-    def _provenance(self, model: str) -> AgentVersion:
-        return AgentVersion(model=model, prompt=PROMPT_VERSION, agent=self.version)
+    def _provenance(self, model: str, prompt: str = PROMPT_VERSION) -> AgentVersion:
+        return AgentVersion(model=model, prompt=prompt, agent=self.version)
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         from edu_domain.contracts import DiscoverKnowledge, GenerateKnowledge, ReviewKnowledge
@@ -212,39 +215,45 @@ class MathAgent:
             models_used = [model]
             open_items = {
                 index: item.source for index, item in enumerate(items)
-                if item.source.readable and item.source.question and grade_item(item).problem is None
+                if item.source.readable and item.source.question
+                and (request.ai_only or grade_item(item).problem is None)
             }
         if open_items:
             from edu_agent.open_assessment import assess_open
 
-            timed_out = False
-            try:
-                async with asyncio.timeout_at(deadline) as review:
-                    assessments, models = await assess_open(self.model, open_items, image=image)
-            except TimeoutError as exc:
-                if not review.expired():
-                    raise
-                if review_only:
-                    raise ModelError("model_page_deadline", retryable=True) from exc
-                timed_out = True
-            except ModelError as exc:
-                if review_only or exc.code not in MODEL_TIMEOUT_CODES:
-                    raise
-                timed_out = True
-            else:
-                for index, assessment in assessments.items():
-                    items[index] = items[index].model_copy(update={"assessment": assessment})
-                models_used.extend(models)
-            if timed_out:
-                for index in open_items:
+            remaining = set(open_items)
+            batch_size = MAX_AI_REVIEW_BATCH if request.ai_only and not review_only else len(open_items)
+            for indexes in batched(open_items, batch_size):
+                try:
+                    async with asyncio.timeout_at(deadline) as review:
+                        assessments, models = await assess_open(
+                            self.model, {index: open_items[index] for index in indexes}, image=image,
+                            include_mastery=request.ai_only,
+                        )
+                except TimeoutError as exc:
+                    if not review.expired():
+                        raise
+                    if review_only:
+                        raise ModelError("model_page_deadline", retryable=True) from exc
+                except ModelError as exc:
+                    if review_only or exc.code not in MODEL_TIMEOUT_CODES:
+                        raise
+                else:
+                    for index, assessment in assessments.items():
+                        items[index] = items[index].model_copy(update={"assessment": assessment})
+                    remaining.difference_update(indexes)
+                    models_used.extend(models)
+                    continue
+                for index in remaining:
                     items[index] = items[index].model_copy(update={"review_timed_out": True})
+                break
 
         model = " / ".join(dict.fromkeys(models_used))
         if request.version == "1" and len(model) > 128:
             raise ModelError("model_invalid_result", retryable=True)
         return AnalysisResult(
             version=request.version, operation=request.operation, quality=quality, items=items,
-            provenance=self._provenance(model),
+            provenance=self._provenance(model, AI_MASTERY_PROMPT_VERSION if request.ai_only else PROMPT_VERSION),
         )
 
     async def _read_and_solve(
@@ -280,7 +289,7 @@ class MathAgent:
                 "choices": source.choices,
             }
             for index, source in enumerate(read.items)
-            if source.readable and source.task and source.expression and (
+            if not request.ai_only and source.readable and source.task and source.expression and (
                 source.question is None or _legacy_source(source)
             )
         ]

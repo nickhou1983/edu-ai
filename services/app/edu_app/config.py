@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     agent_url: str | None = None
     agent_timeout_seconds: int = Field(default=600, ge=10, le=850)
     math_review_retry_enabled: bool = True
+    math_ai_mastery_enabled: bool = False
     managed_identity_client_id: UUID | None = None
     blob_account_url: str | None = None
     blob_container: str | None = None
@@ -30,6 +31,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def check_mode(self):
         if self.mode == "local":
+            if self.math_ai_mastery_enabled and not self.agent_url:
+                raise ValueError("AI homework grading requires EDU_AGENT_URL in local mode")
             if self.agent_url:
                 url = urlsplit(self.agent_url)
                 if url.scheme not in ("http", "https") or url.hostname not in (

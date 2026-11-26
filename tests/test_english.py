@@ -327,11 +327,15 @@ def test_english_migration_preserves_existing_math_rows(tmp_path):
                 VALUES ('legacy-evidence', 'demo-a', 'rational-sum', 'legacy-problem', 2, 1, 'legacy')
             """))
             command.upgrade(config, "head")
-            assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0005"
+            assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0006"
             assert conn.execute(text("SELECT submission_id, english_id, status FROM jobs")).one() == ("legacy", None, "done")
-            assert conn.scalar(text("SELECT score FROM mastery_evidence")) == 2
-            assert conn.scalar(text("SELECT revision FROM submissions")) == 1
+            assert conn.execute(text("SELECT score, verification FROM mastery_evidence")).one() == (2, "rules")
+            assert conn.execute(text("SELECT revision, ai_mastery FROM submissions")).one() == (1, 0)
             assert conn.execute(text("PRAGMA foreign_key_check")).all() == []
+            conn.execute(text("UPDATE submissions SET ai_mastery = true WHERE id = 'legacy'"))
+            with pytest.raises(RuntimeError, match="Preserve AI homework"):
+                command.downgrade(config, "0005")
+            conn.execute(text("UPDATE submissions SET ai_mastery = false WHERE id = 'legacy'"))
             conn.execute(text("""
                 INSERT INTO english_records(id, owner, kind, document, created_at)
                 VALUES ('english-record', 'demo-a', 'worksheet', '{}', 2)

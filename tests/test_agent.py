@@ -213,6 +213,53 @@ def test_open_agent_blind_solvers_never_receive_student_answers(open_math_item):
     assert calls[3].kwargs["image"].startswith("data:image/jpeg;base64,")
 
 
+def test_ai_only_host_grades_basic_items_and_keeps_completed_batches_on_timeout(hosted_model, open_math_item):
+    from openai import APITimeoutError
+
+    from edu_domain.contracts import MAX_AI_REVIEW_BATCH, OpenReviews, OpenSolutions
+    from edu_domain.grading import grade_item
+
+    host, responses, _ = hosted_model
+    source = demo_analysis().items[0].source
+    question = open_math_item.source.question.model_copy(update={
+        "text": source.stem, "goal": "Calculate", "conditions": [], "parts": [],
+    })
+    sources = [
+        source.model_copy(update={"label": str(index + 1), "question": question})
+        for index in range(MAX_AI_REVIEW_BATCH + 1)
+    ]
+    assessment = open_math_item.assessment
+    solutions = OpenSolutions(solutions=[
+        assessment.first.model_copy(update={
+            "index": index, "answer": "-5", "explanation": "-8+3=-5.", "calculation": None,
+        })
+        for index in range(MAX_AI_REVIEW_BATCH)
+    ])
+    review = OpenReviews(reviews=[
+        assessment.review.model_copy(update={
+            "index": index, "outcome": "correct", "mastery_point_index": 0,
+        })
+        for index in range(MAX_AI_REVIEW_BATCH)
+    ])
+    responses.side_effect = [
+        _completed(ReadPage(quality="readable", items=sources)),
+        _completed(solutions), _completed(solutions), _completed(review),
+        *[APITimeoutError(request=httpx.Request("POST", "https://model.example.invalid")) for _ in range(4)],
+    ]
+    request = _photo_request().model_dump()
+    assert "ai_only" not in request
+    with TestClient(host.build_host(local=True)) as client:
+        assert client.post("/invocations", json={**request, "ai_only": True}).status_code == 422
+        response = client.post("/invocations", json={**request, "version": "2", "ai_only": True})
+    assert response.status_code == 200
+    result = AnalysisResult.model_validate_json(response.content)
+    assert result.provenance.prompt == "math-ai-mastery-v1"
+    assert all(item.spec is None and item.candidate is None for item in result.items)
+    assert [grade_item(item).outcome for item in result.items[:-1]] == ["correct"] * MAX_AI_REVIEW_BATCH
+    assert [item.assessment.review.mastery_point_index for item in result.items[:-1]] == [0] * MAX_AI_REVIEW_BATCH
+    assert grade_item(result.items[-1]).reason == "review_timeout"
+
+
 def test_open_agent_drops_duplicate_solver_results(open_math_item):
     from edu_domain.contracts import OpenSolutions
 

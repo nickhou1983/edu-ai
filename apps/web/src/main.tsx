@@ -20,7 +20,8 @@ function routeFromLocation(): Route {
   const view = params.get("view");
   const id = params.get("id");
   const item = params.get("item") ?? undefined;
-  if (view === "knowledge") return { view, id: id ?? undefined, subject: params.get("subject") === "english" ? "english" : "math" };
+  if (view === "knowledge") return { view, id: id ?? undefined, skill: params.get("skill") ?? undefined,
+    subject: params.get("subject") === "english" ? "english" : "math" };
   if (view === "english") return { view, id: id ?? undefined, skill: params.get("skill") ?? undefined };
   if ((view === "report" || view === "exercise") && id) return { view, id, item };
   if (view === "mastery") return { view };
@@ -95,8 +96,8 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
           go({ view: "knowledge", subject: english ? "english" : "math" })}><Icon name="layers" size={17} />知识点目录</button>
         <span>初一 · 学习回路</span>
       </div>
-      {route.view === "knowledge" && <KnowledgeWorkspace key={`${route.subject}:${route.id ?? "directory"}`}
-        api={api} subject={route.subject ?? "math"} id={route.id}
+      {route.view === "knowledge" && <KnowledgeWorkspace key={`${route.subject}:${route.id ?? route.skill ?? "directory"}`}
+        api={api} subject={route.subject ?? "math"} id={route.id} focused={route.skill}
         open={(id) => go({ view: "knowledge", subject: route.subject ?? "math", id })}
         learn={(point) => point.subject === "english" ? go({ view: "english", skill: point.id }) : viewPractice(point.id)} />}
       {route.view === "english" && <EnglishWorkspace api={api} sample={sample} sampleOnly={sampleOnly}
@@ -105,7 +106,8 @@ function Workspace({ api, badge, sample = false, sampleOnly = false, identity }:
       {route.view === "desk" && <Desk api={api} sample={sample} sampleOnly={sampleOnly} open={viewReport} mastery={viewMastery} />}
       {route.view === "report" && route.id && <ReportView key={`${route.id}:${route.item}`} api={api} id={route.id}
         initialItem={route.item ?? null} back={viewDesk} practice={viewPractice} />}
-      {route.view === "mastery" && <MasteryView api={api} practice={viewPractice} evidence={viewEvidence} />}
+      {route.view === "mastery" && <MasteryView api={api} practice={viewPractice} evidence={viewEvidence}
+        reference={(skill) => go({ view: "knowledge", subject: "math", skill })} />}
       {route.view === "practice" && <PracticeDesk key={route.skill} api={api} focused={route.skill ?? null} open={viewExercise} />}
       {route.view === "exercise" && route.id && <PracticeView key={route.id} api={api} id={route.id}
         focus={route.item ?? null} back={() => viewPractice()} mastery={viewMastery} />}

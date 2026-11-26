@@ -235,6 +235,9 @@ nav [aria-current="page"] { font-weight: 700; }
 .skill-grid, .exercise-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
 .skill-metric { display: flex; align-items: baseline; gap: .55rem; margin: .55rem 0 .18rem; color: var(--muted); font-size: .85rem; }
 .skill-metric b { color: var(--ink); font: 700 1.65rem var(--mono); }
+.skill-sources { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin-top: .5rem; }
+.source-rules { background: var(--mint); }
+.source-ai { background: var(--lime); }
 progress, .empty-meter { display: block; width: 100%; height: 9px; border: none; border-radius: 999px; overflow: hidden; background: #e3ebf7; }
 progress::-webkit-progress-bar { background: #e3ebf7; }
 progress::-webkit-progress-value { background: var(--blue); }

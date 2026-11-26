@@ -239,6 +239,8 @@ def build_app(runtime: Runtime) -> FastAPI:
             session.execute(select(Job.id, Job.knowledge_id).limit(0))
             session.execute(select(KnowledgePoint.id).limit(0))
             session.execute(select(KnowledgeActivity.id).limit(0))
+            session.execute(select(Submission.ai_mastery).limit(0))
+            session.execute(select(Evidence.verification).limit(0))
         return {"status": "ready"}
 
     @app.get("/api/session")
@@ -275,7 +277,7 @@ def build_app(runtime: Runtime) -> FastAPI:
             if existing := session.execute(existing_query).one_or_none():
                 return _submission_info(*existing)
 
-        submission = Submission(id=new_id(), owner=owner, digest=digest)
+        submission = Submission(id=new_id(), owner=owner, digest=digest, ai_mastery=settings.math_ai_mastery_enabled)
         keys = [f"{submission.id}/{index}.jpg" for index in range(1, len(data) + 1)]
         stored = []
 
@@ -419,9 +421,9 @@ def build_app(runtime: Runtime) -> FastAPI:
             raise HTTPException(404, _NOT_FOUND)
 
     @app.get("/api/mastery")
-    def mastery(owner: str = require_owner):
+    def mastery(rules_only: bool = False, owner: str = require_owner):
         with runtime.db.session() as session:
-            return overview(session, owner)
+            return overview(session, owner, include_ai=not rules_only)
 
     @app.post("/api/practice-sets", status_code=202)
     def create_practice(body: CreatePractice, owner: str = require_owner):

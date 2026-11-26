@@ -105,6 +105,8 @@ export function ReportView({ api, id, initialItem, back, practice }: {
   const visibleRows = filter ? rows.filter((row) => row.outcome === filter) : rows;
   const item = visibleRows.find((row) => row.id === selected) ?? (pageOverride ? undefined : visibleRows[0]);
   const page = pageOverride ?? item?.page ?? data?.pages[0];
+  const pointIndex = item?.masteryPointId ? item.knowledgeIds?.indexOf(item.masteryPointId) ?? -1 : -1;
+  const masteryPoint = item?.knowledgeTitles?.[pointIndex];
 
   async function retry() {
     setRetrying(true);
@@ -204,7 +206,9 @@ export function ReportView({ api, id, initialItem, back, practice }: {
             {!!item.knowledgeTitles?.length && <p className="small">关联知识点：{item.knowledgeTitles.join("、")}</p>}
             {item.reason && <p className="small muted">核验原因：{reasonNames[item.reason] ?? item.reason}</p>}
             {item.verification === "ai_review" && <p className="small muted">
-              AI 复核不是数学证明，可能存在误判；此题不计入确定性掌握度。
+              {item.eligibleForMastery
+                ? `主考点${masteryPoint ? `「${masteryPoint}」` : ""}的 AI 证据，仅用于掌握度估计。同一道题只计一次。`
+                : "AI 复核不是数学证明，可能存在误判；此题不计入掌握度。"}
             </p>}
             {item.corrected && <p className="small muted">此题为转写核对结果，未计入掌握度。</p>}
             <div className="actions">

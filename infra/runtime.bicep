@@ -10,6 +10,7 @@ param imageDigest string
 param agentUrl string
 
 param mathReviewRetryEnabled bool = true
+param mathAiMasteryEnabled bool = false
 
 @minLength(36)
 @maxLength(36)
@@ -132,6 +133,7 @@ resource api 'Microsoft.App/containerApps@2025-07-01' = if (contains(['api', 'se
           command: ['python', '-m', 'edu_app', 'serve']
           env: concat(workloadEnv(commonEnv, names[0], dbEndpoint, identities[0].properties.clientId), [
             { name: 'EDU_MATH_REVIEW_RETRY_ENABLED', value: string(mathReviewRetryEnabled) }
+            { name: 'EDU_MATH_AI_MASTERY_ENABLED', value: string(mathAiMasteryEnabled) }
           ])
           resources: resources
           probes: [

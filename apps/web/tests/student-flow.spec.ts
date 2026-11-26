@@ -1,6 +1,6 @@
 import { devices, expect, test } from "@playwright/test";
 
-import type { SubmissionDetail } from "../src/api";
+import type { Mastery, SubmissionDetail } from "../src/api";
 
 test("checks homework, traces mastery evidence and reflects independent practice", async ({ page }) => {
   const errors: string[] = [];
@@ -127,15 +127,58 @@ test("retries pending reviews without hiding the report or uploading again", asy
       ...report,
       items: [{
         ...report.items[0], reason: null, verification: "ai_review", outcome: "correct",
-        expected: "2", feedback: "复核完成",
+        expected: "2", feedback: "复核完成", eligibleForMastery: true, masteryPointId: "point-test",
+        knowledgeIds: ["point-test"], knowledgeTitles: ["代入求值"],
       }],
       counts: { ...report.counts, correct: 1, undetermined: 0 },
     },
   };
   await expect(page.getByText("第 1 题 · 正确")).toBeVisible();
+  await expect(page.getByText("主考点「代入求值」的 AI 证据", { exact: false })).toBeVisible();
   await expect(page.getByText("正在复核超时的题目")).toHaveCount(0);
   await expect(retry).toHaveCount(0);
   expect(retries).toBe(1);
+});
+
+test("shows mastery sources and opens the corresponding reference practice", async ({ page }) => {
+  const now = Date.now();
+  const evidence = { itemId: "item", submissionId: "homework", practiceId: null, score: 2, occurredAt: now };
+  const skills: Mastery[] = [{
+    id: "rational-sum", unit: "有理数", title: "有理数加减", status: "stable", percent: 83, sampleCount: 3,
+    practiceMode: "rule", evidence: [
+      { ...evidence, itemId: "first", verification: "rules" },
+      { ...evidence, itemId: "second", verification: "ai_review" },
+      { ...evidence, itemId: "third", verification: "ai_review", score: 1 },
+    ],
+  }, {
+    id: "place-value", unit: "数制", title: "进制换算与比较", status: "insufficient", percent: null,
+    sampleCount: 1, practiceMode: "reference", evidence: [{ ...evidence, verification: "ai_review" }],
+  }];
+  const point = {
+    subject: "math", unit: "数制", origin: "discovered", reviewed: false, assessment: "reference",
+    description: "按位换算后比较。",
+  };
+  await page.route("**/api/mastery", (route) => route.fulfill({ json: skills }));
+  await page.route("**/api/knowledge-points?subject=math", (route) => route.fulfill({ json: {
+    canManage: false, points: [
+      { ...point, id: "place-value", title: "进制换算与比较" },
+      { ...point, id: "other", title: "其他知识点" },
+    ],
+  } }));
+  await page.goto("/?view=mastery");
+  const builtin = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "有理数加减" }) });
+  await expect(builtin.getByText("1 道规则核验")).toBeVisible();
+  await expect(builtin.getByText("2 道 AI 复核")).toBeVisible();
+  await builtin.getByText("查看作答依据").click();
+  await expect(builtin.getByRole("button", { name: /作业题目.*AI 复核/ })).toHaveCount(2);
+  const discovered = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "进制换算与比较" }) });
+  await expect(discovered.getByText("证据不足")).toBeVisible();
+  await expect(discovered.getByText("仅 AI 参考")).toBeVisible();
+  await discovered.getByRole("button", { name: "查看参考练习" }).click();
+  await expect(page).toHaveURL(/view=knowledge.*skill=place-value/);
+  await expect(page.getByRole("heading", { name: "进制换算与比较" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "其他知识点" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "生成参考练习" })).toBeVisible();
 });
 
 test.describe("phone layout", () => {

@@ -78,6 +78,14 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 部署包含迁移 `0005` 和兼容旧 Agent 普通响应的新应用。经部署审批后，**先迁移数据库，再更新 API（`mathReviewRetryEnabled=false`）、Worker**。待旧 Worker 执行结束，再发布新版 Agent；确认 `review_items` 请求可用后，用 `phase=api`、`mathReviewRetryEnabled=true` 开放入口。新 Agent 仍接受没有 `review_items` 的旧请求。回滚时先关闭入口、等已排队的复核结束，再回退 Worker 或 Agent；保留能读取带「待复核」标记的新版 API。用合成单题、密集多题、多页作业和故障注入验收：待复核重试不重复读取整页或处理已核验题；复核失败不擦除现有报告，也不产生错误判分或掌握度证据。
 
+## 全 AI 作业批改与掌握度估计
+
+这一版本新增迁移 `0006`，为作业保留上传时的判分模式，并区分规则和 AI 证据。经部署审批后，先应用迁移，再更新 Worker、API 和 Agent；更新期间保持 `mathAiMasteryEnabled=false`。常规请求不发送 `ai_only` 字段；开启后，新作业使用支持 `ai_only=true` 的数学协议 `2`。不能在旧 Agent 或旧 Worker 尚在运行时开启。
+
+用带人工答案的合成样卷对比误判、漏判和耗时，覆盖基础题、复合题、模糊作答和多页超时。核对新报告的主考点、重传去重、原报告内重试，以及知识点地图的来源标记和旧规则练习。准备切换时，用 `phase=api` 和 `mathAiMasteryEnabled=true` 启用新数学作业。已保存的历史报告、证据和英语流程不回填。
+
+回退时先将 `mathAiMasteryEnabled` 设回 `false`，只影响新上传。已采用全 AI 模式的作业（包括后续待复核重试）仍需要支持该协议的 Worker 和 Agent。保留新版 API 与数据库迁移，才能继续读取新报告和估计；不要为了回退而删除 AI 证据或降级数据库。
+
 ## 独立模型部署与 Agent 切换
 
 `test.settings.json.model` 保留基础模板的 `gpt-5-mini`；`agentModel` 独立配置 Agent 的目标模型。当前选定 `gpt-6.1-sol`、版本 `2026-09-29`、`DataZoneStandard` 容量30（30,000 TPM）。它按实际 token 计费，不是 PTU；美国数据区推理不是单一地域推理，仍只允许合成数据。部署前重新核对配额和费用，不把容量当作费用上限。

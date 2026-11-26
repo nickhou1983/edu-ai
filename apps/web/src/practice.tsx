@@ -8,8 +8,9 @@ import { dateText, Empty, Icon, Problem, Progress, statusText, useRemote } from 
 
 const historyPending = (records: PracticeSet[]) => records.some(pending);
 
-export function MasteryView({ api, practice, evidence }: {
-  api: Api; practice: (skill: string) => void; evidence: (item: Evidence) => void;
+export function MasteryView({ api, practice, reference, evidence }: {
+  api: Api; practice: (skill: string) => void; reference: (point: string) => void;
+  evidence: (item: Evidence) => void;
 }) {
   const stats = useRemote<Mastery[]>(api, "/mastery");
   const units = [...new Set(stats.data?.map((item) => item.unit) ?? [])];
@@ -17,40 +18,52 @@ export function MasteryView({ api, practice, evidence }: {
     <div className="page-title">
       <p className="eyebrow section-code">地图 · 从作答找线索</p>
       <h1>知识点地图</h1>
-      <p className="muted">只参考最近 10 道不同题的有效作答。少于 3 道时，先做几道诊断题。</p>
+      <p className="muted">掌握度估计参考最近 10 道不同题的有效作答。少于 3 道显示证据不足。AI 复核结果仅作学习参考。</p>
     </div>
     {stats.error && <Problem retry={stats.reload}>{stats.error}</Problem>}
     {!stats.data && !stats.error && <p role="status">正在读取掌握情况…</p>}
     {units.map((unit) => <section className="unit-section" key={unit}>
       <h2>{unit}</h2>
       <div className="skill-grid">
-        {stats.data?.filter((item) => item.unit === unit).map((item) => <article className="panel skill-card" key={item.id}>
-          <div className="section-heading"><h3>{item.title}</h3><span className={`pill ${item.status}`}>{masteryNames[item.status]}</span></div>
-          <div className="skill-metric"><b>{item.percent === null ? "—" : `${item.percent}%`}</b><span>有效作答 {item.sampleCount} 道</span></div>
-          {item.percent !== null ? <progress max={100} value={item.percent} aria-label={`${item.title}的得分率`} /> :
-            <div className="empty-meter" aria-hidden="true" />}
-          <div className="actions">
-            <button className="text-button" onClick={() => practice(item.id)}>
-              {item.status === "insufficient" ? "做诊断练习" : "练这个知识点"} <Icon name="arrow" size={16} />
-            </button>
-          </div>
-          {item.evidence.length > 0 && <details>
-            <summary>查看作答依据</summary>
-            <ul className="evidence-list">{item.evidence.map((entry) => <li key={entry.itemId}>
-              <button className="text-button" onClick={() => evidence(entry)}>
-                {entry.submissionId ? "作业题目" : "练习题目"} · {dateText(entry.occurredAt)}
-              </button>
-              <span className="small muted">{["错误", "部分正确", "正确"][entry.score]}</span>
-            </li>)}</ul>
-          </details>}
-        </article>)}
+        {stats.data?.filter((item) => item.unit === unit).map((item) => {
+          const ai = item.evidence.filter((entry) => entry.verification === "ai_review").length;
+          const rules = item.sampleCount - ai;
+          return <article className="panel skill-card" key={item.id}>
+            <div className="section-heading"><h3>{item.title}</h3><span className={`pill ${item.status}`}>{masteryNames[item.status]}</span></div>
+            <div className="skill-metric"><b>{item.percent === null ? "—" : `${item.percent}%`}</b><span>有效作答 {item.sampleCount} 道</span></div>
+            {item.percent !== null ? <progress max={100} value={item.percent} aria-label={`${item.title}的得分率`} /> :
+              <div className="empty-meter" aria-hidden="true" />}
+            {item.sampleCount > 0 && <div className="skill-sources">
+              {rules > 0 && <span className="pill source-rules">{rules} 道规则核验</span>}
+              {ai > 0 && <span className="pill source-ai">{ai} 道 AI 复核</span>}
+              {ai > 0 && rules === 0 && <span className="small muted">仅 AI 参考</span>}
+            </div>}
+            <div className="actions">
+              {item.practiceMode === "reference"
+                ? <button className="text-button" onClick={() => reference(item.id)}>查看参考练习</button>
+                : <button className="text-button" onClick={() => practice(item.id)}>
+                  {item.status === "insufficient" ? "做诊断练习" : "练这个知识点"} <Icon name="arrow" size={16} />
+                </button>}
+            </div>
+            {item.evidence.length > 0 && <details>
+              <summary>查看作答依据</summary>
+              <ul className="evidence-list">{item.evidence.map((entry) => <li key={entry.itemId}>
+                <button className="text-button" onClick={() => evidence(entry)}>
+                  {entry.submissionId ? "作业题目" : "练习题目"} · {dateText(entry.occurredAt)}
+                  {entry.verification === "ai_review" ? " · AI 复核" : " · 规则核验"}
+                </button>
+                <span className="small muted">{["错误", "部分正确", "正确"][entry.score]}</span>
+              </li>)}</ul>
+            </details>}
+          </article>;
+        })}
       </div>
     </section>)}
   </>;
 }
 
 export function PracticeDesk({ api, focused, open }: { api: Api; focused: string | null; open: (id: string) => void }) {
-  const skills = useRemote<Mastery[]>(api, "/mastery");
+  const skills = useRemote<Mastery[]>(api, "/mastery?rules_only=true");
   const history = useRemote<PracticeSet[]>(api, "/practice-sets", historyPending);
   const [choice, setChoice] = useState(focused ?? "");
   const [difficulty, setDifficulty] = useState<Difficulty>("foundation");

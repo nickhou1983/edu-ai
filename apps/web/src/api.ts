@@ -45,6 +45,7 @@ export interface GradedItem {
   reason?: string | null;
   toolChecked?: boolean;
   eligibleForMastery?: boolean;
+  masteryPointId?: string | null;
   knowledgeIds?: string[];
   knowledgeTitles?: string[];
   stepFeedback?: string[];
@@ -68,6 +69,7 @@ export interface Evidence {
   englishId?: string | null;
   score: number;
   occurredAt: number;
+  verification?: "rules" | "ai_review";
 }
 
 export interface Mastery {
@@ -78,6 +80,7 @@ export interface Mastery {
   percent: number | null;
   sampleCount: number;
   evidence: Evidence[];
+  practiceMode?: "rule" | "reference";
 }
 
 export interface PracticeSet extends JobRecord {

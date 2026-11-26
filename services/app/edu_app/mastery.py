@@ -1,27 +1,37 @@
 from collections import defaultdict
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
-from edu_app.db import Evidence
+from edu_app.db import Evidence, KnowledgePoint
 from edu_domain.curriculum import SKILLS
 
 
-def overview(session: Session, owner: str, curriculum=SKILLS) -> list[dict]:
-    # Keep the first verified encounter with a problem, even if it appears in another upload or exercise.
-    encounters = (
-        select(
-            Evidence,
-            func.row_number()
-            .over(
-                partition_by=(Evidence.skill, Evidence.problem_key),
-                order_by=(Evidence.occurred_at, Evidence.source_id),
-            )
-            .label("encounter"),
+def overview(session: Session, owner: str, curriculum=SKILLS, *, include_ai: bool = False) -> list[dict]:
+    encounters_query = select(Evidence).where(Evidence.owner == owner)
+    identity = (Evidence.skill, Evidence.problem_key)
+    if include_ai:
+        shared_rule_keys = (
+            select(Evidence.problem_key)
+            .where(Evidence.owner == owner, Evidence.english_id.is_(None), Evidence.verification == "rules")
+            .group_by(Evidence.problem_key)
+            .having(func.count(Evidence.skill.distinct()) > 1)
+            .subquery()
         )
-        .where(Evidence.owner == owner)
-        .subquery()
-    )
+        # Preserve historical per-skill evidence if the same rule key has multiple meanings.
+        shared = shared_rule_keys.c.problem_key.is_not(None)
+        encounters_query = (
+            encounters_query.outerjoin(shared_rule_keys, Evidence.problem_key == shared_rule_keys.c.problem_key)
+            .where(Evidence.english_id.is_(None), or_(Evidence.verification == "rules", ~shared))
+        )
+        identity = (case((shared, Evidence.skill)), Evidence.problem_key)
+    else:
+        encounters_query = encounters_query.where(Evidence.verification == "rules")
+    encounters = encounters_query.add_columns(
+        func.row_number()
+        .over(partition_by=identity, order_by=(Evidence.occurred_at, Evidence.source_id))
+        .label("encounter"),
+    ).subquery()
     ranked = (
         select(
             encounters,
@@ -40,33 +50,42 @@ def overview(session: Session, owner: str, curriculum=SKILLS) -> list[dict]:
     ).mappings()
     by_skill = defaultdict(list)
     for row in latest:
-        by_skill[row["skill"]].append(
-            {
-                "itemId": row["source_id"],
-                "submissionId": row["submission_id"],
-                "practiceId": row["practice_id"],
-                "englishId": row["english_id"],
-                "score": row["score"],
-                "occurredAt": row["occurred_at"],
-            }
-        )
+        item = {
+            "itemId": row["source_id"],
+            "submissionId": row["submission_id"],
+            "practiceId": row["practice_id"],
+            "englishId": row["english_id"],
+            "score": row["score"],
+            "occurredAt": row["occurred_at"],
+        }
+        if include_ai:
+            item["verification"] = row["verification"]
+        by_skill[row["skill"]].append(item)
+
+    builtin_ids = {skill.id for skill in curriculum}
+    extra_ids = by_skill.keys() - builtin_ids if include_ai else set()
+    extra = session.scalars(
+        select(KnowledgePoint).where(KnowledgePoint.subject == "math", KnowledgePoint.id.in_(extra_ids))
+        .order_by(KnowledgePoint.unit, KnowledgePoint.title, KnowledgePoint.id)
+    ).all() if extra_ids else []
     skills = []
-    for skill in curriculum:
+    for skill in (*curriculum, *extra):
         evidence = by_skill[skill.id]
         if len(evidence) < 3:
             percent, status = None, "insufficient"
         else:
             percent = sum(item["score"] for item in evidence) * 50 // len(evidence)
             status = "priority" if percent < 60 else "reinforce" if percent < 80 else "stable"
-        skills.append(
-            {
-                "id": skill.id,
-                "unit": skill.unit,
-                "title": skill.title,
-                "status": status,
-                "percent": percent,
-                "sampleCount": len(evidence),
-                "evidence": evidence,
-            }
-        )
+        stats = {
+            "id": skill.id,
+            "unit": skill.unit,
+            "title": skill.title,
+            "status": status,
+            "percent": percent,
+            "sampleCount": len(evidence),
+            "evidence": evidence,
+        }
+        if include_ai:
+            stats["practiceMode"] = "rule" if skill.id in builtin_ids else "reference"
+        skills.append(stats)
     return skills

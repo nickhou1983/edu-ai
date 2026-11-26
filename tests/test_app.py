@@ -64,6 +64,141 @@ def test_open_grading_persists_reference_and_knowledge_without_mastery(client, r
         assert stored["analysis"]["assessment"]["first_tool"]["value"] == "2"
 
 
+def test_ai_mastery_counts_primary_evidence_once_after_retry_and_reupload(client, runtime, open_math_item):
+    from edu_domain.contracts import KnowledgeCandidate
+
+    runtime.settings.math_ai_mastery_enabled = True
+    submission = _upload(client, demo_page())
+    path = f"/api/submissions/{submission['id']}"
+    runtime.settings.math_ai_mastery_enabled = False
+
+    def item(index, outcome, point=1, *, consistent=True):
+        question = open_math_item.source.question.model_copy(update={
+            "text": f"已知 a={index}，求 a+1。", "goal": "代入求值", "conditions": [f"a={index}"],
+            "parts": [], "points": [
+                KnowledgeCandidate(
+                    existing_id="rational-sum", title="有理数加减", unit="有理数", description="有理数加减法。",
+                ),
+                KnowledgeCandidate(existing_id=None, title="代入求值", unit="代数", description="根据条件代入求值。"),
+            ],
+        })
+        answer = str(index + 1) if outcome == "correct" else str(index + 2)
+        source = open_math_item.source.model_copy(update={
+            "label": str(index + 1), "question": question, "stem": question.text,
+            "answer": None if outcome == "blank" else answer, "steps": [],
+            "mark": "blank" if outcome == "blank" else "present",
+        })
+        previous = open_math_item.assessment
+        solution = previous.first.model_copy(update={
+            "index": index, "answer": str(index + 1), "calculation": None, "explanation": f"{index}+1={index + 1}。",
+        })
+        assessment = previous.model_copy(update={
+            "first": solution, "second": solution, "first_tool": None, "second_tool": None,
+            "review": previous.review.model_copy(update={
+                "index": index, "outcome": outcome, "source_consistent": consistent, "mastery_point_index": point,
+            }),
+        })
+        return open_math_item.model_copy(update={"source": source, "assessment": assessment})
+
+    pending = item(6, "correct")
+    items = [
+        item(0, "correct"), item(1, "partial"), item(2, "incorrect"), item(3, "blank"),
+        item(4, "correct", consistent=False), item(5, "correct", None),
+        pending.model_copy(update={"assessment": None, "review_timed_out": True}), item(7, "correct", 3),
+    ]
+    base = demo_analysis().model_copy(update={"version": "2"})
+    assessment = pending.assessment
+    retry = pending.model_copy(update={"assessment": assessment.model_copy(update={
+        name: getattr(assessment, name).model_copy(update={"index": 0}) for name in ("first", "second", "review")
+    })})
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.side_effect = [
+        base.model_copy(update={"items": items}),
+        base.model_copy(update={"items": [retry]}),
+        base.model_copy(update={"items": [item(0, "correct", 0), *items[1:]]}),
+    ]
+    assert run_one(runtime, agent, submission["jobId"])
+    assert agent.invoke.call_args.args[0].ai_only
+    before = client.get(path).json()
+    rows = before["report"]["items"]
+    assert [row["eligibleForMastery"] for row in rows] == [True, True, True, False, False, False, False, False]
+    point_id = rows[0]["masteryPointId"]
+    assert point_id == rows[0]["knowledgeIds"][1]
+    stats = _skill(client, point_id)
+    assert (stats["title"], stats["sampleCount"], stats["percent"], stats["practiceMode"]) == (
+        "代入求值", 3, 50, "reference",
+    )
+    assert sorted(evidence["score"] for evidence in stats["evidence"]) == [0, 1, 2]
+    assert {evidence["verification"] for evidence in stats["evidence"]} == {"ai_review"}
+    assert _skill(client)["sampleCount"] == 0
+    assert all(row["id"] != point_id for row in client.get("/api/mastery?rules_only=true").json())
+    assert all(row["id"] != point_id for row in client.get("/api/mastery", headers=_OTHER_STUDENT).json())
+
+    assert client.post(f"{path}/retry").status_code == 202
+    assert run_one(runtime, agent, submission["jobId"])
+    assert agent.invoke.call_args.args[0].ai_only
+    assert agent.invoke.call_args.args[0].review_items == [pending.source]
+    after = client.get(path).json()
+    assert after["report"]["items"][:6] == rows[:6]
+    assert after["report"]["items"][6]["id"] == rows[6]["id"]
+    assert after["report"]["items"][6]["eligibleForMastery"]
+    assert _skill(client, point_id)["sampleCount"] == 4
+    assert client.post(f"{path}/retry").status_code == 409
+    runtime.settings.math_ai_mastery_enabled = True
+    assert _upload(client, demo_page())["id"] == submission["id"]
+    different_photo = BytesIO()
+    Image.new("RGB", (192, 192), "white").save(different_photo, "PNG")
+    duplicate = _upload(client, different_photo.getvalue())
+    assert run_one(runtime, agent, duplicate["jobId"])
+    assert _skill(client, point_id)["sampleCount"] == 4
+    assert _skill(client)["sampleCount"] == 0
+
+
+def test_ai_mastery_merges_with_rule_evidence_without_counting_a_basic_problem_twice(client, runtime, open_math_item):
+    from edu_domain.contracts import KnowledgeCandidate
+
+    original = _upload(client, demo_page())
+    assert run_one(runtime, DemoAgent(), original["jobId"])
+    assert _skill(client)["sampleCount"] == 3
+    runtime.settings.math_ai_mastery_enabled = True
+    edited = BytesIO()
+    Image.new("RGB", (192, 192), "white").save(edited, "PNG")
+    upload = _upload(client, edited.getvalue())
+    assessment = open_math_item.assessment
+    items = []
+    for index, expression in enumerate(("-8+3", "-7+2")):
+        text = f"计算：{expression}"
+        question = open_math_item.source.question.model_copy(update={
+            "text": text, "conditions": [], "parts": [], "goal": "计算",
+            "points": [KnowledgeCandidate(
+                existing_id="rational-sum", title="有理数加减", unit="有理数", description="有理数加减法。",
+            )],
+        })
+        solution = assessment.first.model_copy(update={
+            "index": index, "answer": "-5", "explanation": f"{expression}=-5。", "calculation": None,
+        })
+        items.append(open_math_item.model_copy(update={
+            "source": demo_analysis().items[0].source.model_copy(update={
+                "task": "evaluate", "expression": expression, "stem": text, "question": question, "answer": "-5",
+            }),
+            "assessment": assessment.model_copy(update={
+                "first": solution, "second": solution, "first_tool": None, "second_tool": None,
+                "review": assessment.review.model_copy(update={
+                    "index": index, "outcome": "correct", "mastery_point_index": 0,
+                }),
+            }),
+        }))
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.return_value = demo_analysis().model_copy(update={"version": "2", "items": items})
+    assert run_one(runtime, agent, upload["jobId"])
+    current = _skill(client)
+    assert (current["sampleCount"], current["percent"]) == (4, 75)
+    assert sorted(entry["verification"] for entry in current["evidence"]) == ["ai_review", "rules", "rules", "rules"]
+    assert _practice(client)["purpose"] == "strengthen"
+    rules = next(row for row in client.get("/api/mastery?rules_only=true").json() if row["id"] == "rational-sum")
+    assert (rules["sampleCount"], rules["percent"]) == (3, 66)
+
+
 def test_long_multipage_analysis_renews_lease_before_more_work(client, runtime, monkeypatch):
     from edu_app import jobs
 
@@ -699,3 +834,32 @@ def test_mastery_uses_latest_ten_distinct_problems_and_exact_thresholds(client, 
         stats = _skill(client, skill)
         assert (stats["sampleCount"], stats["percent"], stats["status"]) == (10, percent, status)
         assert [evidence["occurredAt"] for evidence in stats["evidence"]] == list(range(111, 101, -1))
+
+
+def test_mastery_keeps_first_cross_source_encounter_and_preserves_ambiguous_rule_keys(client, runtime):
+    with runtime.db.transaction() as session:
+        for key, skill, verification, time in [
+            ("same-question", "rational-sum", "ai_review", 10),
+            ("same-question", "rational-product", "ai_review", 11),
+            ("same-question", "rational-product", "rules", 12),
+            ("shared-rule-key", "rational-sum", "ai_review", 13),
+            ("shared-rule-key", "rational-sum", "rules", 14),
+            ("shared-rule-key", "rational-product", "rules", 15),
+        ]:
+            session.add(Evidence(
+                source_id=new_id(), owner="demo-a", skill=skill, problem_key=key,
+                verification=verification, score=2, occurred_at=time,
+            ))
+
+    def evidence_times(rows):
+        return {
+            row["id"]: [item["occurredAt"] for item in row["evidence"]]
+            for row in rows if row["evidence"]
+        }
+
+    assert evidence_times(client.get("/api/mastery").json()) == {
+        "rational-sum": [14, 10], "rational-product": [15],
+    }
+    assert evidence_times(client.get("/api/mastery?rules_only=true").json()) == {
+        "rational-sum": [14], "rational-product": [15, 12],
+    }

@@ -1,4 +1,8 @@
+import json
+import logging
+import unicodedata
 from collections.abc import Callable
+from hashlib import sha256
 from typing import Literal
 from uuid import UUID, uuid5
 
@@ -17,7 +21,9 @@ from edu_domain.contracts import (
     SkillId,
 )
 from edu_domain.grading import Grade, grade_item
-from edu_domain.math import problem_text
+from edu_domain.math import expression_signature, matches_printed_target, problem_text
+
+logger = logging.getLogger(__name__)
 
 
 class ReportItem(Contract):
@@ -37,6 +43,7 @@ class ReportItem(Contract):
     tool_checked: bool = False
     knowledge_ids: list[str] = Field(default_factory=list)
     knowledge_titles: list[str] = Field(default_factory=list)
+    mastery_point_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @staticmethod
     def from_grade(grade: Grade) -> dict:
@@ -75,8 +82,11 @@ class ReportItem(Contract):
             "verification": self.verification,
             "reason": self.reason,
             "toolChecked": self.tool_checked,
-            "eligibleForMastery": self.verification == "rules" and self.score is not None
-            and self.correction is None and self.problem_key is not None,
+            "eligibleForMastery": self.score is not None and self.correction is None and (
+                (self.verification == "rules" and self.problem_key is not None)
+                or (self.verification == "ai_review" and self.mastery_point_id is not None)
+            ),
+            "masteryPointId": self.mastery_point_id,
             "knowledgeIds": self.knowledge_ids,
             "knowledgeTitles": self.knowledge_titles,
             "stepFeedback": self.analysis.assessment.review.steps
@@ -125,6 +135,25 @@ def is_pending_review(value: dict) -> bool:
     return value.get("reason") == "review_timeout" and value.get("correction") is None
 
 
+def _ai_problem_key(item: ReportItem) -> str:
+    source = item.analysis.source
+    question = source.question
+    assert question is not None
+    if (
+        source.task and source.expression and not question.conditions and len(question.parts) <= 1
+        and not question.diagram and matches_printed_target(source.task, question.text, source.expression)
+    ):
+        # Match the existing exercise identity without using rules to score the answer.
+        signature = expression_signature(source.task, source.expression)
+        return sha256(f"{source.task}:{signature}".encode()).hexdigest()
+
+    def normalized(text: str) -> str:
+        return " ".join(unicodedata.normalize("NFC", text).split())
+
+    printed = [normalized(question.text), normalized(question.diagram), sorted(map(normalized, source.choices))]
+    return sha256(json.dumps(printed, ensure_ascii=False).encode()).hexdigest()
+
+
 def save_report(session: Session, submission: Submission, document: dict) -> None:
     from edu_app.knowledge import resolve_point
 
@@ -133,27 +162,42 @@ def save_report(session: Session, submission: Submission, document: dict) -> Non
     session.execute(delete(Evidence).where(Evidence.submission_id == submission.id))
     for value in document["items"]:
         item = ReportItem.model_validate(value)
-        if item.analysis.source.question and item.verification != "unresolved":
+        point_id = item.mastery_point_id
+        question = item.analysis.source.question
+        if question and item.verification != "unresolved" and not item.knowledge_ids:
             points = [
                 resolve_point(session, "math", candidate.model_dump(), submission.owner)
-                for candidate in item.analysis.source.question.points
+                for candidate in question.points
             ]
             value["knowledge_ids"] = list(dict.fromkeys(point.id for point in points))
             value["knowledge_titles"] = list(dict.fromkeys(point.title for point in points))
-        if item.correction is not None:
+            if submission.ai_mastery and item.verification == "ai_review" and item.score is not None:
+                assessment = item.analysis.assessment
+                index = assessment.review.mastery_point_index if assessment else None
+                if index is not None and index < len(points):
+                    point_id = value["mastery_point_id"] = points[index].id
+                elif index is not None:
+                    logger.info("math_mastery_point_invalid item=%s", item.id)
+        if item.correction is not None or item.score is None:
             continue
-        if item.verification == "rules" and item.score is not None and item.problem_key and item.skill:
-            session.add(
-                Evidence(
-                    source_id=item.id,
-                    owner=submission.owner,
-                    submission_id=submission.id,
-                    skill=item.skill,
-                    problem_key=item.problem_key,
-                    score=item.score,
-                    occurred_at=submission.created_at,
-                )
+        if item.verification == "rules" and item.problem_key and item.skill:
+            skill, key = item.skill, item.problem_key
+        elif submission.ai_mastery and item.verification == "ai_review" and point_id is not None:
+            skill, key = point_id, _ai_problem_key(item)
+        else:
+            continue
+        session.add(
+            Evidence(
+                source_id=item.id,
+                owner=submission.owner,
+                submission_id=submission.id,
+                skill=skill,
+                problem_key=key,
+                score=item.score,
+                verification=item.verification,
+                occurred_at=submission.created_at,
             )
+        )
     session.add(Report(submission_id=submission.id, revision=submission.revision, document=document))
 
 

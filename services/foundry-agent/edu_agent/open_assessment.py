@@ -51,6 +51,12 @@ blank from unclear. Partial credit needs a specifically justified correct interm
 not merely some writing. Compare alternate equivalent forms and valid alternative solution methods.
 Give constructive Chinese feedback and concrete per-step feedback. Do not claim certainty, official
 marks or mastery percentages. Return each original index exactly once."""
+_MASTERY = """
+For mastery_point_index, choose at most one zero-based index from this item's question.points.
+Choose only the primary assessed concept for which the visible student work or final response directly
+provides evidence, positive or negative. Do not select incidental prerequisites. A wrong choice on
+a multi-concept problem need not identify which concept caused the error. If the point cannot be
+isolated, the work is blank or unclear, or the verdict is undetermined, return null."""
 
 
 def _unique(entries, indexes):
@@ -77,7 +83,7 @@ async def _infer_open[T: BaseModel](
     return await model.infer(schema, instructions, text, **image_arg)
 
 
-async def assess_open(model, items, *, image: str):
+async def assess_open(model, items, *, image: str, include_mastery: bool = False):
     questions = [
         {"index": index, "question": source.question.model_dump(), "choices": source.choices}
         for index, source in items.items()
@@ -116,8 +122,9 @@ async def assess_open(model, items, *, image: str):
     ]
     if not review_input:
         return {}, [first_model, second_model]
+    instructions = _REVIEW + (_MASTERY if include_mastery else "\nSet mastery_point_index to null.")
     reviewed, review_model = await _infer_open(
-        model, OpenReviews, _REVIEW, json.dumps(review_input, ensure_ascii=False), image=image,
+        model, OpenReviews, instructions, json.dumps(review_input, ensure_ascii=False), image=image,
     )
     reviews = _unique(reviewed.reviews, tools)
     result = {

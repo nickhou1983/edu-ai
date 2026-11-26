@@ -30,6 +30,7 @@ from edu_app.reports import ReportItem, is_pending_review, make_report, page_ver
 from edu_app.runtime import Runtime
 from edu_domain.agent_protocol import MAX_AGENT_METADATA_BYTES
 from edu_domain.contracts import (
+    MAX_AI_REVIEW_BATCH,
     RULES_VERSION,
     SCHEMA_VERSION,
     AgentVersion,
@@ -121,6 +122,7 @@ def _analyze(runtime: Runtime, agent: Agent, work: Work) -> dict:
     assert work.submission_id is not None
     submission_id = work.submission_id
     with runtime.db.session() as session:
+        ai_only = session.get_one(Submission, submission_id).ai_mastery
         pages = list(
             session.execute(
                 select(Page.number, Page.object_key, Page.analysis_checkpoint)
@@ -138,7 +140,7 @@ def _analyze(runtime: Runtime, agent: Agent, work: Work) -> dict:
             except ValidationError:
                 logger.warning("page_checkpoint_invalid id=%s page=%d", work.id, number)
             else:
-                if _known_points(cached, known):
+                if _valid_page(cached, known, ai_only=ai_only):
                     results.append((number, cached))
                     continue
                 logger.info("page_checkpoint_stale id=%s page=%d", work.id, number)
@@ -149,11 +151,12 @@ def _analyze(runtime: Runtime, agent: Agent, work: Work) -> dict:
                     operation="analyze_submission",
                     image_base64=_page_image(runtime, object_key),
                     catalog=points,
+                    ai_only=ai_only,
                 )
             )
         except DemoImageOnly as exc:
             raise AgentFailure("demo_image_only") from exc
-        if not isinstance(result, AnalysisResult) or not _known_points(result, known):
+        if not isinstance(result, AnalysisResult) or not _valid_page(result, known, ai_only=ai_only):
             raise AgentFailure("agent_invalid_result", retryable=True)
         with runtime.db.transaction() as session:
             job = _require_lease(session, work)
@@ -164,7 +167,14 @@ def _analyze(runtime: Runtime, agent: Agent, work: Work) -> dict:
     return make_report(submission_id, results, before_item=lambda: _renew(runtime, work))
 
 
-def _known_points(result: AnalysisResult, known: set[str]) -> bool:
+def _valid_page(result: AnalysisResult, known: set[str], *, ai_only: bool) -> bool:
+    if ai_only and (result.version != "2" or any(
+        item.spec is not None or item.candidate is not None
+        or (item.source.readable and item.source.question is None)
+        or (item.assessment is not None and item.assessment.first.index != index)
+        for index, item in enumerate(result.items)
+    )):
+        return False
     return all(
         candidate.existing_id is None or candidate.existing_id in known
         for item in result.items if item.source.question
@@ -181,7 +191,7 @@ def _page_image(runtime: Runtime, object_key: str) -> str:
         raise AgentFailure("asset_unavailable", retryable=True) from exc
 
 
-def _review_batches(items: list[ReportItem]) -> Iterator[list[ReportItem]]:
+def _review_batches(items: list[ReportItem], *, ai_only: bool = False) -> Iterator[list[ReportItem]]:
     # Leave room for the request envelope and delimiters within the Host's body limit.
     budget = MAX_AGENT_METADATA_BYTES - 1024
     batch = []
@@ -190,7 +200,7 @@ def _review_batches(items: list[ReportItem]) -> Iterator[list[ReportItem]]:
         item_size = len(item.analysis.source.model_dump_json().encode("utf-8"))
         if item_size > budget:
             raise AgentFailure("agent_invalid_result")
-        if batch and size + item_size > budget:
+        if batch and (size + item_size > budget or (ai_only and len(batch) == MAX_AI_REVIEW_BATCH)):
             yield batch
             batch, size = [], 0
         batch.append(item)
@@ -201,9 +211,11 @@ def _review_batches(items: list[ReportItem]) -> Iterator[list[ReportItem]]:
 
 def _review_batch(
     runtime: Runtime, agent: Agent, work: Work, image: str, targets: list[ReportItem],
+    *, ai_only: bool,
 ) -> tuple[AnalysisResult, dict[str, ReportItem]]:
     request = AnalyzePage(
         version="2", operation="analyze_submission", image_base64=image,
+        ai_only=ai_only,
         review_items=[target.analysis.source for target in targets],
     )
     try:
@@ -268,6 +280,7 @@ def _retry_pending_reviews(runtime: Runtime, agent: Agent, work: Work, submissio
         submission = session.get_one(Submission, submission_id)
         if not submission.revision:
             return False
+        ai_only = submission.ai_mastery
         report = session.get_one(Report, (submission_id, submission.revision))
         targets: dict[int, list[ReportItem]] = {}
         for value in report.document["items"]:
@@ -285,9 +298,9 @@ def _retry_pending_reviews(runtime: Runtime, agent: Agent, work: Work, submissio
         if number not in page_keys:
             raise AgentFailure("image_missing")
         image = _page_image(runtime, page_keys[number])
-        for batch in _review_batches(items):
+        for batch in _review_batches(items, ai_only=ai_only):
             _renew(runtime, work)
-            result, replacements = _review_batch(runtime, agent, work, image, batch)
+            result, replacements = _review_batch(runtime, agent, work, image, batch, ai_only=ai_only)
             if replacements:
                 _save_review_batch(runtime, work, submission_id, number, result, replacements)
             if len(replacements) < len(batch):
