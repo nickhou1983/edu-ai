@@ -1,40 +1,226 @@
-# Azure 合成数据测试环境
+# Azure 部署与运维手册
 
-使用 `test.settings.json` 中的专用 North Central US 环境（East US 2 因订阅限制不可用，已获批改区）。这个发布会产生 Azure 费用，只处理合成题图。数据库无公网入口或密码登录；题图通过 Blob Private Endpoint 访问，存储公网、匿名访问和账户密钥均关闭。Web 界面有 HTTPS 公网入口，但业务 API 要求 Entra 登录并按作业所有者隔离。
+本手册适用于 [`test.settings.json`](test.settings.json) 中已批准的 North Central US 专用环境，**只允许合成数据**。模板和发布脚本绑定该环境的资源命名，部分脚本还校验租户、订阅或镜像来源；不要原样部署到其他订阅。构建、运行和模型调用会产生 Azure 费用。仅想体验应用时，请用[本地演示](../README.md#本地运行)。
 
-## 发布顺序
+[环境与权限](#环境与权限) · [首次部署](#首次部署) · [已有环境升级](#已有环境的分阶段应用升级) · [验收](#发布验收) · [开关与回滚](#功能开关与回滚) · [排障](#部署排障) · [发布记录](#历史发布记录)
 
-1. 确认已审批的订阅、租户、地域、资源组和两位测试用户。使用两位已指定测试用户的 **Entra 用户对象 ID**（不是客户端 ID）运行 `python infra/release/entra.py check-users "$TEST_USER_1" "$TEST_USER_2"`。没有两位可用账号时不启动发布。批准后注册 `Microsoft.DBforPostgreSQL`、`Microsoft.ServiceBus`（如尚未注册），再检查 PostgreSQL、Service Bus 和 Foundry 可用配额；有阻塞时不更换地域、SKU 或放开数据库防火墙。
-2. 用 `az deployment sub create --location northcentralus --name edu-ai-test-foundation-nc --template-file infra/main.bicep --parameters deployerObjectId="$DEPLOYER_OBJECT_ID"` 建立依赖，读取输出 `appOrigin`、`projectEndpoint` 和 `registryLoginServer`。部署者 ID 是当前 Azure CLI 用户在目标租户中的对象 ID。确认 Foundry 项目身份在账户范围具有 Foundry User 角色（账户创建项目时可自动授予），项目身份和三个工作负载身份均可从 ACR 拉取镜像。不要把 Application Insights 连接到 Foundry 项目，否则服务端会自动记录模型内容。
-3. 用 `python infra/release/build_context.py --output-dir "$BUILD_CONTEXT_DIR"` 生成两个隔离目录，再用 `az acr build --registry creduaitestc2d102 --image edu-app:"$TAG" --file "$BUILD_CONTEXT_DIR/app/Dockerfile" --platform linux/amd64 "$BUILD_CONTEXT_DIR/app"` 构建应用。用相同参数、仓库 `edu-agent`、Dockerfile `$BUILD_CONTEXT_DIR/agent/Dockerfile` 和目录 `$BUILD_CONTEXT_DIR/agent` 构建 Agent。Dockerfile 参数使用实际本地路径，不是上下文内的相对路径。不要把仓库根目录作为 ACR 上下文。用 `az acr repository show --name creduaitestc2d102 --image <repository>:<tag> --query digest -o tsv` 解析发布标签；后续发布只用 `sha256:` 摘要。
-4. 运行 `python infra/release/entra.py create "$TEST_USER_1" "$TEST_USER_2" --origin "$APP_ORIGIN"`。脚本将 API 与 SPA 设为单租户、要求分配，并逐一核对两个企业应用恰好只有上述两位用户。如果应用名称已存在，不会覆盖；核对归属后使用 `verify`，不要为规避错误而关闭分配要求。发布参数用脚本输出的两个 `appId`；记录两个 `objectId` 供清理。
-5. 按下文「独立模型部署与 Agent 切换」先确认目标模型已部署，再在启用了 `hosted` 依赖的锁定 Python 环境中运行 `python infra/release/hosted_agent.py "$REGISTRY_LOGIN/edu-agent@$AGENT_DIGEST"`。脚本仅向本项目注册 Invocations 2.0.0 容器，等待版本变为 `active`，再输出 `agentUrl`。该入口只有 Worker 业务身份可调用，不给 Agent 数据库或题图存储权限。
-6. 用下列参数先运行 `phase=migrate`，再用 `az containerapp job start` 启动 `job-init-edu-ai-test-c2d102`，通过 `az containerapp job execution show` 检查该次执行状态为 `Succeeded`。迁移 Job 在私网内创建数据库、映射两种应用身份、执行 Alembic 并授予应用读写权限。确认迁移成功且步骤 4 的 `verify` 通过后，才将相同参数的 `phase` 改成 `serve`，启用 API 和事件 Worker。两个阶段均用增量模式。
+## 环境与权限
+
+| 所需组件 | 用途与边界 |
+| --- | --- |
+| Azure Container Apps、ACR | API/前端、事件 Worker 和手动迁移 Job 共用 `edu-app` 镜像；Foundry 使用独立的 `edu-agent` 镜像。 |
+| PostgreSQL Flexible Server、Blob Storage | 存储学习记录和题图。数据库用私网和 Entra 认证，存储通过 Blob 私有终结点，不开启公网、匿名访问或共享密钥。 |
+| Service Bus、VNet、私有 DNS | Service Bus 触发 Worker，消息不携带题图；VNet 与私有 DNS 提供数据库和 Blob 的访问路径。 |
+| Microsoft Foundry 账户、项目、模型与 Hosted Agent | Worker 经 Entra 调用 Hosted Invocations；Agent 不直接访问数据库、Blob 或队列。基础模板预配 `gpt-5-mini`，当前 Agent 的默认模型另行部署。 |
+| Microsoft Entra ID 和托管身份 | 单租户 API/SPA 只向两位已分配的测试用户开放；API、Worker、迁移各用独立身份。 |
+| Azure Monitor / Log Analytics | 用于容器和作业的运行日志；**不要将 Application Insights 连接到 Foundry 项目**，见[排障](#部署排障)。 |
+
+发布前准备 Bash、Azure CLI（能运行 `az bicep` 和 `az containerapp`）、`jq`、`curl`、Git、Python 3.12+ 和 uv。部署者须有目标订阅部署资源、指派 Azure 角色、运行 ACR 构建、发布 Foundry Agent 的权限；首次部署还需能通过 Microsoft Graph 注册 API/SPA 并配置企业应用分配。确认所需资源提供程序已注册（尤其 `Microsoft.DBforPostgreSQL`、`Microsoft.ServiceBus`），以及目标地域支持所需 SKU 和模型容量。受限时联系管理员，不自行换区、换 SKU 或放开防火墙。
+
+在仓库根目录用同一个 Bash 会话执行以下准备命令。先登录获准租户，并确认所选订阅；不要将测试用户 ID、访问令牌或凭据写入仓库。
 
 ```bash
-az deployment group create --resource-group rg-edu-ai-test-c2d102 \
-  --name edu-ai-test-migrate --mode Incremental --template-file infra/runtime.bicep \
-  --parameters phase=migrate imageDigest="$APP_DIGEST" agentUrl="$AGENT_URL" \
-    apiClientId="$ENTRA_API_CLIENT_ID" spaClientId="$ENTRA_SPA_CLIENT_ID"
+SETTINGS=infra/test.settings.json
+SUBSCRIPTION=$(jq -er .subscriptionId "$SETTINGS")
+TENANT=$(jq -er .tenantId "$SETTINGS")
+LOCATION=$(jq -er .location "$SETTINGS")
+RG=$(jq -er .resourceGroup "$SETTINGS")
+ACR=$(jq -er .registry "$SETTINGS")
+APP=$(jq -er .api "$SETTINGS")
+WORKER=$(jq -er .worker "$SETTINGS")
+MIGRATION=$(jq -er .migration "$SETTINGS")
+
+az login --tenant "$TENANT"
+az account set --subscription "$SUBSCRIPTION"
+az account show --query '{id:id,tenantId:tenantId}' -o table
+uv sync --locked --extra hosted
 ```
 
-7. 在分享网址前检查 `/api/health`、未登录的业务 API 返回 401、未获分配账号无法登录。用两个已分配账号验证上传、真实模型报告、练习、掌握度和跨账号拒绝；检查队列重投递不重复计入掌握度。以独立标注的合成题分别衡量自动批改覆盖率（至少 80%）和自动批改项的一致率（至少 95%），不要用本地替身结果代替。
+## 首次部署
 
-清理时，删除专用资源组及两项专用 Entra 应用注册和企业应用分配；使用记录的对象 ID 核对，不按名称批量删除。停止客户端访问并不会停止现有 Azure 资源费用。
+### 1. 核对测试用户，创建基础设施
+
+将 `TEST_USER_1`、`TEST_USER_2` 设为两位获批用户的 **Entra 用户对象 ID**，不是应用客户端 ID。先检查这两位用户仍可用。核对 `what-if` 符合预期并获准后，才执行 `create`。下面的部署者 ID 来自当前 CLI 登录用户。
+
+```bash
+.venv/bin/python infra/release/entra.py check-users "$TEST_USER_1" "$TEST_USER_2"
+DEPLOYER_OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
+FOUNDATION=edu-ai-test-foundation-nc
+az deployment sub what-if --location "$LOCATION" \
+  --name "$FOUNDATION" --template-file infra/main.bicep \
+  --parameters deployerObjectId="$DEPLOYER_OBJECT_ID"
+```
+
+```bash
+az deployment sub create --location "$LOCATION" \
+  --name "$FOUNDATION" --template-file infra/main.bicep \
+  --parameters deployerObjectId="$DEPLOYER_OBJECT_ID"
+OUTPUTS=$(az deployment sub show --name "$FOUNDATION" --query properties.outputs -o json)
+APP_ORIGIN=$(jq -er .appOrigin.value <<< "$OUTPUTS")
+PROJECT_ENDPOINT=$(jq -er .projectEndpoint.value <<< "$OUTPUTS")
+REGISTRY_LOGIN=$(jq -er .registryLoginServer.value <<< "$OUTPUTS")
+```
+
+确认项目托管身份可拉取 ACR 镜像、调用模型；三个工作负载身份可拉取应用镜像。运行[独立模型部署](#独立模型部署与-agent-切换)中的 `model.bicep` 步骤，确认目标模型就绪后再注册 Agent。仅部署基础设施会缺少当前默认 Agent 使用的模型。
+
+### 2. 配置登录
+
+新环境且尚无注册时使用 `create`。若注册已存在或上次只创建了部分资源，先核对归属和配置，不要重建或关闭「需要分配」；已有完整注册直接走 `verify`。
+
+```bash
+.venv/bin/python infra/release/entra.py create "$TEST_USER_1" "$TEST_USER_2" --origin "$APP_ORIGIN"
+```
+
+```bash
+ENTRA_APPS=$(.venv/bin/python infra/release/entra.py verify \
+  "$TEST_USER_1" "$TEST_USER_2" --origin "$APP_ORIGIN")
+ENTRA_API_CLIENT_ID=$(jq -er .api.appId <<< "$ENTRA_APPS")
+ENTRA_SPA_CLIENT_ID=$(jq -er .spa.appId <<< "$ENTRA_APPS")
+```
+
+`appId` 用于部署；`objectId` 用于后续查找或清理注册，不可混用。回调地址为 `$APP_ORIGIN/auth-redirect.html`。脚本默认只授予普通访问权限，不授予 `Teacher` 或 `Admin`。
+
+### 3. 构建镜像，发布 Agent
+
+以干净的发布提交为输入，使用未占用的标签；同一提交重建时换用新标签。构建目录必须在仓库之外。ACR 只接收脚本生成的两个隔离目录，**不要上传仓库根目录**。
+
+```bash
+TAG=$(git rev-parse --short HEAD)
+BUILD_CONTEXT_DIR=$(mktemp -d /tmp/edu-ai-release.XXXXXX)
+.venv/bin/python infra/release/build_context.py --output-dir "$BUILD_CONTEXT_DIR"
+
+az acr build --registry "$ACR" --image "edu-app:$TAG" \
+  --file "$BUILD_CONTEXT_DIR/app/Dockerfile" --platform linux/amd64 "$BUILD_CONTEXT_DIR/app"
+az acr build --registry "$ACR" --image "edu-agent:$TAG" \
+  --file "$BUILD_CONTEXT_DIR/agent/Dockerfile" --platform linux/amd64 "$BUILD_CONTEXT_DIR/agent"
+APP_DIGEST=$(az acr repository show --name "$ACR" --image "edu-app:$TAG" --query digest -o tsv)
+AGENT_DIGEST=$(az acr repository show --name "$ACR" --image "edu-agent:$TAG" --query digest -o tsv)
+printf 'app=%s\nagent=%s\n' "$APP_DIGEST" "$AGENT_DIGEST"
+```
+
+确认两个构建成功，且摘要均为 `sha256:` 加 64 位十六进制字符串。不要用标签部署。注册脚本使用 `test.settings.json` 的项目；确认与 `PROJECT_ENDPOINT` 一致。脚本只在版本 `active` 且 Agent `enabled` 时输出 `version` 和 `agentUrl`。
+
+```bash
+AGENT_RELEASE=$(.venv/bin/python -m infra.release.hosted_agent "$REGISTRY_LOGIN/edu-agent@$AGENT_DIGEST")
+AGENT_URL=$(jq -er .agentUrl <<< "$AGENT_RELEASE")
+jq -er .version <<< "$AGENT_RELEASE"
+```
+
+记录源提交、构建 ID、两个摘要和版本；发布后清理这次创建的隔离目录。
+
+### 4. 迁移数据库，启用 Worker 和 API
+
+以下函数供首次部署和已有环境升级使用。每个阶段分开执行预览和应用；仅在差异符合预期后运行 `create`。首次保持两个 AI 开关关闭，待兼容组件就绪后再按需要启用。
+
+```bash
+MATH_AI=false
+ENGLISH_AI=false
+MATH_RETRY=true
+
+runtime_stage() {
+  az deployment group "$1" --resource-group "$RG" --name "edu-ai-test-$2" \
+    --mode Incremental --template-file infra/runtime.bicep \
+    --parameters phase="$2" imageDigest="$APP_DIGEST" agentUrl="$AGENT_URL" \
+      apiClientId="$ENTRA_API_CLIENT_ID" spaClientId="$ENTRA_SPA_CLIENT_ID" \
+      mathAiMasteryEnabled="$MATH_AI" englishAiMasteryEnabled="$ENGLISH_AI" \
+      mathReviewRetryEnabled="$MATH_RETRY"
+}
+
+runtime_stage what-if migrate
+```
+
+```bash
+runtime_stage create migrate
+MIGRATION_EXECUTION=$(az containerapp job start -g "$RG" -n "$MIGRATION" --query name -o tsv)
+az containerapp job execution show -g "$RG" -n "$MIGRATION" \
+  --job-execution-name "$MIGRATION_EXECUTION" --query properties.status -o tsv
+```
+
+迁移 Job 在私网内创建数据库、映射应用身份、执行 Alembic 并授予读写权限。重复**查询同一次执行**，直到 `Succeeded`；不要为查询状态再次启动。失败时停止发布，按[排障](#部署排障)处理。当前代码的迁移版本是 `0006`。迁移成功、登录配置 `verify` 通过后，按顺序预览和发布 `worker`、`api`：
+
+```bash
+runtime_stage what-if worker
+# 审阅差异后运行：runtime_stage create worker
+runtime_stage what-if api
+# Worker 已配置且审阅差异后运行：runtime_stage create api
+```
+
+`phase=serve` 会一次更新 Worker 和 API；需要控制顺序时用上述独立阶段。上线后执行[发布验收](#发布验收)。
 
 ## 已有环境的分阶段应用升级
 
-英语版本需新增数据库迁移 `0003`，不能只发布前端。沿用现有资源和不可变镜像摘要，不重新执行基础设施模板，也不更改网络、SKU、身份分配或监控连接。
+沿用现有资源，不重放 `main.bicep`，不改变身份、网络或监控连接。先保存当前 Agent 版本、两种镜像、API revision/流量、三个开关和数据库迁移版本。读取现有入口，按[配置登录](#2-配置登录)使用 `verify` 取得两个客户端 ID，不执行 `create`。
 
-批准升级后，先构建应用和 Agent 的隔离上下文。应用镜像包含数学与英语演示模块，构建时会实际导入 API、Worker 和英语模块，避免本地环境掩盖漏打包问题。发布兼容数学的新版 Agent 后，用相同参数依次部署 `runtime.bicep` 的以下阶段：
+```bash
+APP_FQDN=$(az containerapp show -g "$RG" -n "$APP" --query properties.configuration.ingress.fqdn -o tsv)
+APP_ORIGIN="https://$APP_FQDN"
+REGISTRY_LOGIN=$(az acr show --name "$ACR" --query loginServer -o tsv)
+PROJECT_ENDPOINT="https://$(jq -er .foundry "$SETTINGS").services.ai.azure.com/api/projects/$(jq -er .project "$SETTINGS")"
+```
 
-1. `phase=migrate`：更新现有迁移 Job，执行并确认迁移成功、现有数学数据保留且新表已授予工作负载读写权限。
-2. `phase=worker`：只更新现有事件 Worker；等待旧执行结束，核对新镜像及 Agent 地址，不修改 API。
-3. `phase=api`：只更新现有 API/前端；等待就绪后检查登录、数学与英语合成数据流程。
+按[构建与注册](#3-构建镜像发布-agent)准备不可变镜像；只在迁移有变化时运行 `phase=migrate` 和迁移 Job。使用 Bicep 更新 API 时，把上述 `MATH_AI`、`ENGLISH_AI`、`MATH_RETRY` 设成读回的线上值（或本次明确批准的目标值），不要沿用首次部署的默认值。
 
-每个阶段均先检查增量 `what-if`，确认不会删除资源或改动阶段外组件，再实际发布。`phase=serve` 保留用于原有一次性发布流程，不用于需要严格先后顺序的英语升级。若新版本失败，停止后续阶段，保留现有资源和迁移数据；数据库已产生英语数据后不能直接降级至 `0002`。
+通常先发布可服务旧 Worker 的新版 Agent，再升级 Worker，最后升级 API 并打开新功能。切换前检查协议和报告的双向兼容性：若旧 API 不能读取新 Worker 写出的报告，先部署能读取旧报告的新 API，并保持新功能关闭。等待旧任务完成或确认它们能由新版继续处理；不让旧 Worker 消费它不理解的新任务。发布记录中的特殊次序仅适用于对应版本。
 
-## 共享知识点版本升级
+如果预览包含不相关的 registry、ingress 或 scale 变更，不要套用模板。**仅更新镜像且 `EDU_AGENT_URL` 等配置未变时**，可用已验证过的定点方式；先更新 Worker 并核对配置，再更新 API：
+
+```bash
+APP_IMAGE="$REGISTRY_LOGIN/edu-app@$APP_DIGEST"
+az containerapp job update -g "$RG" -n "$WORKER" --container-name worker --image "$APP_IMAGE"
+az containerapp update -g "$RG" -n "$APP" --container-name api --image "$APP_IMAGE"
+```
+
+若阶段失败，停止后续步骤，按兼容性选择回滚，不删除已写入的数据。
+
+## 发布验收
+
+先查镜像、开关、正在承接流量的 revision 和 HTTP 结果。已有环境的 `APP_ORIGIN` 可从 API 的 HTTPS ingress FQDN 取得。
+
+```bash
+az containerapp job show -g "$RG" -n "$WORKER" -o json | jq -e '
+  .properties.template.containers[] | select(.name == "worker") |
+  {image, agentUrl: (.env[] | select(.name == "EDU_AGENT_URL") | .value)}
+'
+az containerapp revision list -g "$RG" -n "$APP" \
+  --query '[].{revision:name,health:properties.healthState,traffic:properties.trafficWeight}' -o table
+az containerapp show -g "$RG" -n "$APP" -o json | jq -e '
+  .properties.template.containers[] | select(.name == "api") |
+  {image, flags: [.env[] | select(.name | test("^EDU_(MATH_(AI_MASTERY|REVIEW_RETRY)|ENGLISH_AI_MASTERY)_ENABLED$"))]}
+'
+curl -fsS "$APP_ORIGIN/api/health"
+curl -sS -o /dev/null -w '%{http_code}\n' "$APP_ORIGIN/api/submissions"
+```
+
+预期：Worker 和 API 均使用目标镜像，Worker 指向预期 Agent；目标 revision 健康且承接 100% 流量。健康接口返回 `{"status":"ready"}`，匿名业务请求返回 `401`。健康检查不调用模型。
+
+然后用独立标注的合成题验收。直接调用 Agent 只能核对协议和样题结果；还要用两位已分配账号登录，覆盖数学/英语上传、批改、待复核重试、数学规则练习、英语客观练习和掌握度入库。检查重投递不重复计分、未分配账号拒绝登录，以及两个账号无法读取对方的题图或报告。教学质量另行测量：分别统计自动判分覆盖率（目标至少 80%）和已判分项与人工标注的一致率（目标至少 95%）。不能用模型冒烟或本地替身代替这些验收。
+
+## 功能开关与回滚
+
+三个开关都在 API 容器上。设置前先读回当前值；改完重复[发布验收](#发布验收)的版本、开关和流量检查。
+
+| API 环境变量 | Bicep 参数 | 默认值 | 影响 |
+| --- | --- | --- | --- |
+| `EDU_MATH_AI_MASTERY_ENABLED` | `mathAiMasteryEnabled` | `false` | 新数学作业 |
+| `EDU_ENGLISH_AI_MASTERY_ENABLED` | `englishAiMasteryEnabled` | `false` | 新英语作业和新建客观练习 |
+| `EDU_MATH_REVIEW_RETRY_ENABLED` | `mathReviewRetryEnabled` | `true` | 数学报告的待复核重试入口 |
+
+例如，在 API、Worker 和 Agent 均已支持英语新协议后，只开启英语，不改其他变量：
+
+```bash
+az containerapp update -g "$RG" -n "$APP" --container-name api \
+  --set-env-vars EDU_ENGLISH_AI_MASTERY_ENABLED=true
+```
+
+关闭时把相应值改为 `false`。**AI 模式在记录创建时锁定**：关闭开关不会重算旧报告、删除证据或取消已排队任务。已锁定 AI 模式的作业、练习和后续重试仍依赖兼容的 Worker 与 Agent；已有新格式报告时也须保留能读取它们的 API。确需回退镜像或模型时，先阻止新任务进入不兼容的模式，核对已排队/执行任务及历史数据读取能力，再恢复兼容版本，不直接降级数据库。
+
+经审批退役测试环境时，按资源组、两项专用 Entra 注册及企业应用的对象 ID 核对并清理，不按名称批量删除。只停用客户端访问不会停止 Azure 资源计费。
+
+## 历史发布记录
+
+以下是各版本发布时的事实，不是当前部署指令。最近一次记录为 [英语 AI 批改与掌握度](#英语-ai-批改与掌握度)：API `0000011`、Agent `11`、数据库 `0006`，三个开关均开启。
+
+### 共享知识点版本升级
 
 此版本已部署到现有合成测试环境，源提交 `985d2f3`，Agent 版本 `7`，API 就绪版本 `0000002`，数据库迁移 `0004`。应用 ACR 构建 `cpc`，镜像摘要 `sha256:94b25924e325818caca7b01bd4883d229343b96a0cf17d3c23d69ce10266dea0`；Agent 构建 `cpb`，摘要 `sha256:9470c54167e27a25c4b5f96fa54a610163dc61d6fa17e20dbd0da272090aa3ef`。模型仍为 `gpt-6.1-sol`，没有修改基础设施、网络、SKU 或监控连接。
 
@@ -48,7 +234,7 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 完整上线验收还包括：教师能增加/整理、普通用户维护请求收到403；两个用户看到同一通用目录，但不能读取对方原图、发现记录、参考练习或反馈；数学与英语上传都触发发现；重复上传与并发同名发现只新增一次；低清晰度不扩展目录；重放及重试不重复创建反馈。使用合成题并重新检查延迟入库的模型内容追踪。每页增加一次模型发现调用，参考生成和反馈也按实际调用另计费用。
 
-## 数学开放判分升级
+### 数学开放判分升级
 
 此版本已推送并部署到现有合成测试环境，源提交 `ab5cfb9440f76f22270269fe7eff2a488b074296`。应用 ACR 构建 `cpg`，摘要 `sha256:023bc995266f87f397f116c38857c7efb10b1779703adff8fa875eff2f131cf0`；Agent 构建 `cph`，摘要 `sha256:81bc064556e6d12fa5c29782521a5ebe7006b531c909278cdb18b4e6a5c92668`。Agent `8` 已 active/enabled，API 就绪版本 `0000006`，Worker 使用同版应用镜像并实际更新 `replicaTimeout=7200`。两个阶段的实际资源写入分别只有原有 API 和 Worker，其余有效配置、模型、权限、网络及监控保持不变，没有执行迁移。
 
@@ -64,7 +250,7 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 每页通常增加两次盲解和一次原图复核调用，混合页还可能有原规则解题调用；模型费用与延迟会增加。新 Worker 的开放数学请求默认最多等待600秒，其他操作保持原125秒预算，并在数学分页与逐题核验前续约，避免多页长任务被重新领取。事件 Worker 的整体执行上限与队列锁续约配套延长到2小时；这是上限而非预期耗时，部署时必须同时更新 `runtime.bicep` 的 Worker 配置。发布验收须用合成图片检查应用题、杨辉三角、多变量、大指数、绝对值和复合任务，并检查解题冲突、工具失败、空白/不清楚作答、旧报告、跨账号隔离和消息重放。离线模型替身不能代替真实识别和判分质量验收；此次仅获准生成草稿，没有批量评估或模型评分执行授权。
 
-## 数学分析超时与断点恢复
+### 数学分析超时与断点恢复
 
 源提交 `d5e7c24` 已发布到现有合成测试环境。应用 ACR 构建 `cpk`、摘要 `sha256:a5f5539799138062999603941ab9af2be04881fa955b3541c4b84c4f9d566d3d`；Agent 构建 `cpj`、摘要 `sha256:bbdceebf51c62f20008653cef0327ae5114c233bf3cc4e9dc7c79ec0b0f4183b`。迁移执行 `job-init-edu-ai-test-c2d102-sjeefub` 成功，Agent `9` 已启用，Worker 使用新应用镜像，API 就绪版本 `0000008` 已开启复核入口。未修改模型部署、网络或权限。
 
@@ -78,7 +264,7 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 部署包含迁移 `0005` 和兼容旧 Agent 普通响应的新应用。经部署审批后，**先迁移数据库，再更新 API（`mathReviewRetryEnabled=false`）、Worker**。待旧 Worker 执行结束，再发布新版 Agent；确认 `review_items` 请求可用后，用 `phase=api`、`mathReviewRetryEnabled=true` 开放入口。新 Agent 仍接受没有 `review_items` 的旧请求。回滚时先关闭入口、等已排队的复核结束，再回退 Worker 或 Agent；保留能读取带「待复核」标记的新版 API。用合成单题、密集多题、多页作业和故障注入验收：待复核重试不重复读取整页或处理已核验题；复核失败不擦除现有报告，也不产生错误判分或掌握度证据。
 
-## 全 AI 作业批改与掌握度估计
+### 全 AI 作业批改与掌握度估计
 
 源提交 `beadedadf60adde2b166613ed0668190b19b76e1` 已发布到现有合成测试环境。应用 ACR 构建 `cpn`、摘要 `sha256:444c73ac87d17ee2285503a5d7f8c7c140909a5e9d9269dda75f7bf205670c68`；Agent 构建 `cpm`、摘要 `sha256:6d6f036720efae529900a2633b4ffe18fe8961d26935a88efa37e25a9a11142c`。迁移执行 `job-init-edu-ai-test-c2d102-3hhs4fe` 成功，API 就绪版本为 `0000009`，Worker 使用同版镜像，Hosted Agent `10` 已启用。全 AI 开关为关闭，原有待复核重试入口保持开启；模型、网络和权限未变更。
 
@@ -90,7 +276,7 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 回退时先将 `mathAiMasteryEnabled` 设回 `false`，只影响新上传。已采用全 AI 模式的作业（包括后续待复核重试）仍需要支持该协议的 Worker 和 Agent。保留新版 API 与数据库迁移，才能继续读取新报告和估计；不要为了回退而删除 AI 证据或降级数据库。
 
-## 英语 AI 批改与掌握度
+### 英语 AI 批改与掌握度
 
 源提交 `cef80000c9a20db3307146aee7a91237c12a9589` 已发布到现有合成测试环境。应用 ACR 构建 `cpq`、摘要 `sha256:969d072bb7db03bc82aaf9f1aa92b5e1bd42973ba0f6cfb57f5850cf1496e5a0`；Agent 构建 `cpp`、摘要 `sha256:b6db35318e2cf9f8a3f04852c8c775b50d603c25d86964970f77dff06c4c1570`。Hosted Agent `11` 已启用，Worker 使用新应用镜像，API 就绪版本 `0000011` 承接 100% 流量，已开启英语 AI 批改。为了保留现有配置，仅更新了 Worker 镜像、API 镜像和英语开关，没有重放运行模板或执行数据库迁移。数学 AI 批改与待复核重试仍开启，模型、网络、身份和权限不变。
 
@@ -104,34 +290,41 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 `test.settings.json.model` 保留基础模板的 `gpt-5-mini`；`agentModel` 独立配置 Agent 的目标模型。当前选定 `gpt-6.1-sol`、版本 `2026-09-29`、`DataZoneStandard` 容量30（30,000 TPM）。它按实际 token 计费，不是 PTU；美国数据区推理不是单一地域推理，仍只允许合成数据。部署前重新核对配额和费用，不把容量当作费用上限。
 
-经审批后，在现有资源组只执行 `model.bicep`，不重放基础模板、网络或身份配置：
+在目标资源组使用 `model.bicep`，不重放基础模板。预览差异并获准后再应用：
 
 ```bash
-az deployment group what-if --subscription f1212123-43be-417e-ab0a-0b81570c04d8 \
-  --resource-group rg-edu-ai-test-c2d102 --name edu-ai-model-sol-20261125 \
-  --template-file infra/model.bicep
-az deployment group create --subscription f1212123-43be-417e-ab0a-0b81570c04d8 \
-  --resource-group rg-edu-ai-test-c2d102 --name edu-ai-model-sol-20261125 \
+az deployment group what-if -g "$RG" --name edu-ai-test-agent-model \
   --mode Incremental --template-file infra/model.bicep
-az cognitiveservices account deployment show \
-  --subscription f1212123-43be-417e-ab0a-0b81570c04d8 \
-  --resource-group rg-edu-ai-test-c2d102 --name ai-edu-ai-test-c2d102 \
-  --deployment-name gpt-6.1-sol \
+```
+
+```bash
+az deployment group create -g "$RG" --name edu-ai-test-agent-model \
+  --mode Incremental --template-file infra/model.bicep
+az cognitiveservices account deployment show -g "$RG" \
+  --name "$(jq -er .foundry "$SETTINGS")" \
+  --deployment-name "$(jq -er .agentModel.deployment "$SETTINGS")" \
   --query '{state:properties.provisioningState,model:properties.model,sku:sku}'
 ```
 
-确认模型 Succeeded 且支持所需 Responses、图片与结构化输出后，用现有的真实 Agent 镜像摘要运行 `hosted_agent.py`。模型切换不需要重建镜像或更新 API/Worker；脚本比较完整定义，相同镜像但模型不同会创建新版本，完全相同则复用。发布后检查 active/enabled、实际 `MODEL_DEPLOYMENT_NAME` 与返回结果的模型来源，而不只检查控制台模型名称。
+确认模型状态为 `Succeeded`，且支持 Responses、图片与结构化输出，再返回[首次部署](#首次部署)。对于仅切换模型的升级，可用现有 Agent 镜像摘要运行注册脚本，无需重建镜像或更新 API/Worker。脚本比较完整定义，相同镜像但模型不同会创建新版本，完全相同则复用。发布后核对 `active` / `enabled`、实际 `MODEL_DEPLOYMENT_NAME` 和合成请求结果，不只检查控制台模型名称。
 
 保留旧模型和版本。若需回退，用相同镜像运行以下命令创建恢复旧模型配置的 Agent 版本；不删除新模型或回退数据库：
 
 ```bash
-.venv/bin/python infra/release/hosted_agent.py \
+.venv/bin/python -m infra.release.hosted_agent \
   "$REGISTRY_LOGIN/edu-agent@$AGENT_DIGEST" --model-deployment gpt-5-mini
 ```
 
 `--model-deployment` 是显式临时覆盖，不改 `agentModel` 默认值；后续正常发布仍使用配置中的新模型。不要为切换模型开启内容追踪或增加 Agent 的数据库、Blob 权限。
 
 ## 部署排障
+
+| 现象 | 先检查 |
+| --- | --- |
+| 页面可打开但登录失败 | 用 `entra.py verify` 核对两项注册、回调地址和两位测试用户的分配。匿名访问业务 API 返回 `401` 是预期行为。 |
+| 上传成功但作业长期未开始 | 对照作业 ID 查 API 派发和 Worker 日志、Service Bus 队列积压与死信、事件 Job 执行状态；先查原因，不手动重复提交。 |
+| 报告显示「待复核」 | 已判题仍有效，待复核不等于判错或仍在后台运行。有重试入口时在原报告重试，不重新上传。 |
+| Agent 超时或限流 | 查看模型阶段、上游状态和任务耗时。协议 v2 默认单次模型调用 90 秒、整页 420 秒、Worker 单次 Agent 等待上限 600 秒；Worker 整个执行上限 7200 秒。这些是不同层的预算，不是延迟承诺。 |
 
 迁移连接超时时，先检查 PostgreSQL 的 `state` 和活动日志，再检查私网 DNS、路由和身份认证。若订阅治理自动化停止了服务器，联系订阅管理员确认并处理治理限制；不要通过反复启动服务器、放开公网或更换身份来绕过限制。服务器恢复为 `Ready` 后，再重跑迁移并核对执行状态。
 
@@ -142,3 +335,18 @@ az cognitiveservices account deployment show \
 Hosted Agent 保留运行控制台日志，但关闭 SDK 默认的自动插桩与遥测导出。还须断开 Foundry 项目的 Application Insights 连接：`responsesapi` 服务端追踪不受容器内容开关控制，单独关闭 SDK 也不能阻止模型内容记录。[微软官方停用说明](https://learn.microsoft.com/en-us/azure/foundry/observability/concepts/trace-data#disable-tracing)要求断开监控资源；因此不提供 Foundry 内置调用追踪视图，保留容器/队列运行监控。
 
 旧环境的 `appi-connection` 不会因增量部署删去 Bicep 声明而自动消失。先核对连接属于本测试项目、类别为 `AppInsights` 且目标是专用监控资源，获得批准后仅删除该连接；不要删除 Application Insights 本身或已有日志。发布后以合成请求核对 `AppGenAIContent` 没有新增记录，并留出日志入库延迟。
+
+## 合成评估记录
+
+Agent 根目录的 [`.foundry/agent-metadata.yaml`](../services/foundry-agent/.foundry/agent-metadata.yaml) 记录发布版本和素材来源。[开放数学评估草稿](../services/foundry-agent/.foundry/suites/open-math-ab5cfb9/review.json) 未做批量运行；草稿 `candidate_response` 不是线上结果，生成的 `0.5` 门槛不是质量标准。
+
+[知识点评估集](../services/foundry-agent/.foundry/suites/knowledge-smoke-curated-v1.json) 包含 15 个请求和 6 张规范合成 JPEG，蓝色作答为机器排版。从仓库根可执行以下离线命令，不登录 Azure、不调用模型：
+
+```bash
+.venv/bin/python -m edu_agent.knowledge_evaluation prepare
+.venv/bin/python -m edu_agent.knowledge_evaluation validate
+```
+
+对 Agent `7` 的一次获批线上运行中，结构检查通过 14/15，模型评分通过 13/15，两者同时通过 12/15。人工复核还发现 5 道题的区域框未覆盖完整题干，部分用例预期也需要校准。这些结果不能证明通用判分准确率、手写识别质量或后续版本表现。
+
+再次运行线上评估需单独授权，且须核对所测 Agent 版本和镜像摘要；`run --approve-live` 会发送真实合成请求，`--with-judge` 会额外调用评分模型，均会计费。结果写入被 Git 忽略的 `.foundry/results/`。它不会更新部署、数据库或监控配置。
