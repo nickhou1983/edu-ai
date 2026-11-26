@@ -92,6 +92,10 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 ## 英语 AI 批改与掌握度
 
+源提交 `cef80000c9a20db3307146aee7a91237c12a9589` 已发布到现有合成测试环境。应用 ACR 构建 `cpq`、摘要 `sha256:969d072bb7db03bc82aaf9f1aa92b5e1bd42973ba0f6cfb57f5850cf1496e5a0`；Agent 构建 `cpp`、摘要 `sha256:b6db35318e2cf9f8a3f04852c8c775b50d603c25d86964970f77dff06c4c1570`。Hosted Agent `11` 已启用，Worker 使用新应用镜像，API 就绪版本 `0000011` 承接 100% 流量，已开启英语 AI 批改。为了保留现有配置，仅更新了 Worker 镜像、API 镜像和英语开关，没有重放运行模板或执行数据库迁移。数学 AI 批改与待复核重试仍开启，模型、网络、身份和权限不变。
+
+新版 Agent 的一次真实合成英语样卷调用返回两道有效结果：`She ___ a student.` 选 `is` 判正确，`book` 的复数写成 `book` 判错误，均归入语法。API 健康检查、匿名访问拒绝和新前端资源通过核对；没有在 Azure 上登录上传、提交在线练习或验证掌握度入库，也未运行批量评估。
+
 英语复核复用现有 `0006` 数据库和协议 `2` 超时预算，不需要新迁移。新版 Agent 和 Worker 支持 `analyze_english` 版本 `2`（含原报告待复核批次）及在线客观练习的 `grade_english`。旧分析、练习生成和表达反馈的版本 `1` 仍可用。新版 API、Worker 和 Agent 全部就绪之前保持 `englishAiMasteryEnabled=false`。
 
 实际切换前，用合成样卷和在线客观练习核对双解冲突、部分正确、留白、作答隐藏、原报告重试、样本来源及跨账号隔离。启用或回退只需调整 `phase=api` 的 `englishAiMasteryEnabled`；提交模板时显式传入当前的 `mathAiMasteryEnabled` 和 `mathReviewRetryEnabled`，避免默认值改变现有数学行为。回退只影响新作业和新练习；已经锁定 AI 模式的记录继续依赖新版 Worker 和 Agent。

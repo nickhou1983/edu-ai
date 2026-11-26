@@ -3,7 +3,7 @@ environments:
   synthetic-test:
     projectEndpoint: https://ai-edu-ai-test-c2d102.services.ai.azure.com/api/projects/proj-edu-ai-test-c2d102
     agentName: agent-edu-ai-test-c2d102
-    agentVersion: "10"
+    agentVersion: "11"
     azureContainerRegistry: creduaitestc2d102.azurecr.io
     evaluationSuites:
       - id: open-math-generated
