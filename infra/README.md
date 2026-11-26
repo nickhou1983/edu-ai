@@ -66,6 +66,10 @@ az deployment group create --resource-group rg-edu-ai-test-c2d102 \
 
 ## 数学分析超时与断点恢复
 
+源提交 `d5e7c24` 已发布到现有合成测试环境。应用 ACR 构建 `cpk`、摘要 `sha256:a5f5539799138062999603941ab9af2be04881fa955b3541c4b84c4f9d566d3d`；Agent 构建 `cpj`、摘要 `sha256:bbdceebf51c62f20008653cef0327ae5114c233bf3cc4e9dc7c79ec0b0f4183b`。迁移执行 `job-init-edu-ai-test-c2d102-sjeefub` 成功，Agent `9` 已启用，Worker 使用新应用镜像，API 就绪版本 `0000008` 已开启复核入口。未修改模型部署、网络或权限。
+
+新版 Agent 的一次合成 `review_items` 调用返回 HTTP 200，已确认复核返回正确的题目索引和 AI 判分；API 健康检查、线上前端资源及未登录访问拒绝通过。登录后从上传到报告重试的流程未在线复验，复核失败及报告合并由本地回归覆盖。
+
 数学协议 `2` 默认单次模型 SDK 超时为90秒（Agent 的 `EDU_MATH_MODEL_TIMEOUT_SECONDS`），整页处理截止时间为420秒（`EDU_MATH_PAGE_TIMEOUT_SECONDS`）；若收到 Worker 的读取预算，Agent 会再为返回响应预留至少5秒。Worker 的 `EDU_AGENT_TIMEOUT_SECONDS` 默认600秒，旧版与其它操作保持原45秒模型 SDK 超时及至多125秒 Worker 读取等待时间。发布前用合成题确认 Foundry 网关转发预算和任务关联头，并验证实际网关限制足以接收响应；不能用 Worker 的两小时执行上限替代验证。
 
 日志按作业编号记录操作、模型阶段、耗时、上游状态或异常类型，不记录原图、题干、作答或模型响应正文。限流由 Worker 统一退避，不在 Agent 请求里等待 `Retry-After`。可重试任务最多自动尝试3次，使用带抖动的退避（上限120秒）。数学作业重试只请求未完成的页；成功写报告后删除临时断点。开放题的独立解题或原图复核超时可在本页预算内重试当前模型调用一次；仍失败时，本次报告保留已核验题，相关题目显示「待复核」，不判错、不写掌握度证据。此状态不表示后台仍在复核。
