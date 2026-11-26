@@ -155,7 +155,7 @@ resource worker 'Microsoft.App/jobs@2025-07-01' = if (contains(['worker', 'serve
     workloadProfileName: 'Consumption'
     configuration: {
       triggerType: 'Event'
-      replicaTimeout: 900
+      replicaTimeout: 7200
       replicaRetryLimit: 0
       eventTriggerConfig: {
         parallelism: 1

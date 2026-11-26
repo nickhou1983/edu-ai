@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -12,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from edu_agent.service import AgentInputError, MathAgent, ModelError, model_schema
-from edu_domain.contracts import MAX_PAGE_BYTES, AgentRequest
+from edu_domain.contracts import MAX_PAGE_BYTES, AgentRequest, AnalyzePage
 
 logger = logging.getLogger(__name__)
 _REQUEST = TypeAdapter(AgentRequest)
@@ -30,28 +31,39 @@ class FoundryModel:
         content = [{"type": "input_text", "text": text}]
         if image:
             content.append({"type": "input_image", "image_url": image, "detail": "high"})
-        try:
-            response = await self.client.responses.create(
-                model=self.deployment,
-                instructions=instructions,
-                input=[{"role": "user", "content": content}],
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": schema.__name__,
-                        "schema": model_schema(schema),
-                        "strict": True,
-                    }
-                },
-                max_output_tokens=12000,
-                store=False,
-            )
-        except (APIConnectionError, ClientAuthenticationError) as exc:
-            raise ModelError("model_unreachable", retryable=True) from exc
-        except APIStatusError as exc:
-            raise ModelError(
-                "model_request_failed", retryable=exc.status_code in (408, 429) or exc.status_code >= 500
-            ) from exc
+        for attempt in range(2):
+            try:
+                response = await self.client.responses.create(
+                    model=self.deployment,
+                    instructions=instructions,
+                    input=[{"role": "user", "content": content}],
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": schema.__name__,
+                            "schema": model_schema(schema),
+                            "strict": True,
+                        }
+                    },
+                    max_output_tokens=12000,
+                    store=False,
+                )
+                break
+            except (APIConnectionError, ClientAuthenticationError) as exc:
+                raise ModelError("model_unreachable", retryable=True) from exc
+            except APIStatusError as exc:
+                if exc.status_code == 429 and attempt == 0:
+                    try:
+                        delay = int(exc.response.headers.get("retry-after", "60"))
+                    except ValueError:
+                        delay = 60
+                    if 0 <= delay <= 120:
+                        logger.warning("model_rate_limited retry_after=%s", delay)
+                        await asyncio.sleep(delay)
+                        continue
+                raise ModelError(
+                    "model_request_failed", retryable=exc.status_code in (408, 429) or exc.status_code >= 500
+                ) from exc
         if response.status != "completed" or not response.output_text:
             raise ModelError("model_no_result", retryable=False)
         try:
@@ -94,6 +106,10 @@ def build_host(*, local: bool = False) -> InvocationAgentServerHost:
         except ModelError as exc:
             logger.warning("model_call_failed code=%s retryable=%s", exc.code, exc.retryable)
             return JSONResponse({"error": exc.code}, status_code=503 if exc.retryable else 424)
+        if isinstance(payload, AnalyzePage) and payload.version == "1":
+            return JSONResponse(result.model_dump(mode="json", exclude={
+                "items": {"__all__": {"assessment": True, "source": {"question": True}}},
+            }))
         return JSONResponse(result.model_dump(mode="json"))
 
     return host

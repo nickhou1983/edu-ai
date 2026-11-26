@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     web_dir: Path = Path("apps/web/dist")
     database_url: str | None = None
     agent_url: str | None = None
-    agent_timeout_seconds: int = Field(default=125, ge=10, le=130)
+    agent_timeout_seconds: int = Field(default=600, ge=10, le=850)
     managed_identity_client_id: UUID | None = None
     blob_account_url: str | None = None
     blob_container: str | None = None

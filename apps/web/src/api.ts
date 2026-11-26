@@ -41,6 +41,13 @@ export interface GradedItem {
   outcome: Outcome;
   feedback: string;
   canCorrect: boolean;
+  verification?: "rules" | "ai_review" | "unresolved";
+  reason?: string | null;
+  toolChecked?: boolean;
+  eligibleForMastery?: boolean;
+  knowledgeIds?: string[];
+  knowledgeTitles?: string[];
+  stepFeedback?: string[];
 }
 
 export interface Report {

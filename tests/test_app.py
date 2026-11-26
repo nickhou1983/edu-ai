@@ -36,6 +36,96 @@ def _practice(client):
     return response.json()
 
 
+def test_open_grading_persists_reference_and_knowledge_without_mastery(client, runtime, open_math_item):
+    from edu_app.db import KnowledgePoint
+
+    open_math_item = open_math_item.model_copy(update={"source": open_math_item.source.model_copy(update={
+        "stem": "先化简再求值",
+    })})
+    submission = _upload(client, demo_page())
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.return_value = demo_analysis().model_copy(update={"items": [open_math_item]})
+    assert run_one(runtime, agent, submission["jobId"])
+    path = f"/api/submissions/{submission['id']}"
+    result = client.get(path).json()["report"]["items"][0]
+    assert (result["outcome"], result["expected"], result["verification"]) == ("incorrect", "2", "ai_review")
+    assert result["stem"] == open_math_item.source.question.text
+    assert result["toolChecked"] and not result["eligibleForMastery"] and not result["canCorrect"]
+    assert result["knowledgeTitles"] == ["整式化简与代入求值"]
+    assert len(result["knowledgeIds"]) == 1
+    assert result["stepFeedback"]
+    assert client.get(path, headers=_OTHER_STUDENT).status_code == 404
+    assert all(skill["sampleCount"] == 0 for skill in client.get("/api/mastery").json())
+    with runtime.db.session() as session:
+        assert session.get(KnowledgePoint, result["knowledgeIds"][0]).origin == "discovered"
+        assert session.get(Evidence, result["id"]) is None
+        stored = session.get(Report, (submission["id"], 1)).document["items"][0]
+        assert stored["rules_version"] == "math-open-v1"
+        assert stored["analysis"]["assessment"]["first_tool"]["value"] == "2"
+
+
+def test_long_multipage_analysis_renews_lease_before_more_work(client, runtime, monkeypatch):
+    from edu_app import jobs
+
+    image = BytesIO()
+    Image.new("RGB", (192, 192), "white").save(image, "PNG")
+    submission = _upload(client, demo_page(), image.getvalue())
+    clock = {"now": now_ms()}
+    monkeypatch.setattr(jobs, "now_ms", lambda: clock["now"])
+
+    def analyze(_request):
+        clock["now"] += 650_000
+        assert _claim(runtime, submission["jobId"]) is None
+        return demo_analysis()
+
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.side_effect = analyze
+    assert run_one(runtime, agent, submission["jobId"])
+    assert agent.invoke.call_count == 2
+    assert client.get(f"/api/submissions/{submission['id']}").json()["status"] == "done"
+    with runtime.db.session() as session:
+        assert session.get(Job, submission["jobId"]).attempts == 1
+
+
+def test_unconfirmed_ai_review_does_not_publish_reference_steps(client, runtime, open_math_item):
+    assessment = open_math_item.assessment
+    item = open_math_item.model_copy(update={"assessment": assessment.model_copy(update={
+        "review": assessment.review.model_copy(update={"source_consistent": False}),
+    })})
+    submission = _upload(client, demo_page())
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.return_value = demo_analysis().model_copy(update={"items": [item]})
+    assert run_one(runtime, agent, submission["jobId"])
+    reported = client.get(f"/api/submissions/{submission['id']}").json()["report"]["items"][0]
+    assert reported["outcome"] == "undetermined" and reported["reason"] == "source_mismatch"
+    assert reported["expected"] is None and reported["stepFeedback"] == []
+
+
+def test_open_analysis_http_budget_does_not_extend_other_operations(tmp_path):
+    import httpx
+
+    from edu_app.agent_client import HttpAgent
+    from edu_app.config import Settings
+    from edu_domain.contracts import AnalyzePage
+
+    settings = Settings(_env_file=None, mode="local", data_dir=tmp_path, agent_url="http://127.0.0.1:8080")
+    agent = HttpAgent(settings, None)
+    agent.client.close()
+    budgets = []
+
+    def respond(request):
+        budgets.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, json=demo_analysis().model_dump())
+
+    agent.client = httpx.Client(transport=httpx.MockTransport(respond), timeout=settings.agent_timeout_seconds)
+    try:
+        for version in ("2", "1"):
+            agent.invoke(AnalyzePage(version=version, operation="analyze_submission", image_base64="aaaa"))
+    finally:
+        agent.close()
+    assert budgets == [600, 125]
+
+
 @pytest.mark.parametrize(("upload_path", "record_path"), [
     ("/api/submissions", "/api/submissions"),
     ("/api/english/worksheets", "/api/english/records"),

@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 SCHEMA_VERSION = "1"
 RULES_VERSION = "math-v1"
+OPEN_RULES_VERSION = "math-open-v1"
 MAX_PAGES = 4
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
 MAX_PAGE_BYTES = 500_000
@@ -21,7 +22,7 @@ Mark = Literal["present", "blank", "unclear"]
 Outcome = Literal["correct", "partial", "incorrect", "blank", "undetermined"]
 JobStatus = Literal["queued", "running", "done", "failed"]
 Expression = Annotated[str, Field(min_length=1, max_length=96)]
-AnswerText = Annotated[str, Field(max_length=96)]
+AnswerText = Annotated[str, Field(max_length=4000)]
 
 
 class Contract(BaseModel):
@@ -52,14 +53,15 @@ class Region(Contract):
 class ReadItem(Contract):
     label: Annotated[str, Field(min_length=1, max_length=24)]
     region: Region
-    stem: Annotated[str, Field(max_length=500)]
+    stem: Annotated[str, Field(max_length=6000)]
     task: Task | None
     expression: Expression | None
     choices: Annotated[list[Expression], Field(max_length=4)]
     readable: bool
     mark: Mark
     answer: AnswerText | None
-    steps: Annotated[list[Expression], Field(max_length=8)]
+    steps: Annotated[list[Annotated[str, Field(max_length=2000)]], Field(max_length=12)]
+    question: "MathQuestion | None" = None
 
 
 class ReadPage(Contract):
@@ -81,12 +83,14 @@ class AnalyzedItem(Contract):
     source: ReadItem
     spec: ProblemSpec | None
     candidate: AnswerText | None
+    assessment: "OpenAssessment | None" = None
 
 
 class AnalyzePage(Contract):
-    version: Literal["1"]
+    version: Literal["1", "2"]
     operation: Literal["analyze_submission"]
     image_base64: Annotated[str, Field(min_length=4, max_length=((MAX_PAGE_BYTES + 2) // 3) * 4)]
+    catalog: "Annotated[list[KnowledgeDescriptor], Field(max_length=250)]" = Field(default_factory=list)
 
 
 class GeneratePractice(Contract):
@@ -99,13 +103,13 @@ class GeneratePractice(Contract):
 
 
 class AgentVersion(Contract):
-    model: Annotated[str, Field(min_length=1, max_length=128)]
+    model: Annotated[str, Field(min_length=1, max_length=512)]
     prompt: Annotated[str, Field(min_length=1, max_length=64)]
     agent: Annotated[str, Field(min_length=1, max_length=128)]
 
 
 class AnalysisResult(Contract):
-    version: Literal["1"]
+    version: Literal["1", "2"]
     operation: Literal["analyze_submission"]
     quality: Literal["readable", "unclear"]
     items: Annotated[list[AnalyzedItem], Field(max_length=MAX_ITEMS_PER_PAGE)]
@@ -297,6 +301,80 @@ class KnowledgeCandidate(Contract):
         return value.strip() if isinstance(value, str) else value
 
 
+class SymbolBinding(Contract):
+    symbol: Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9]{0,31}$")]
+    value: Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class Calculation(Contract):
+    operation: Literal["evaluate", "simplify", "solve", "equivalent"]
+    expression: Annotated[str, Field(min_length=1, max_length=2000)]
+    variables: Annotated[list[Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9]{0,31}$")]],
+                         Field(max_length=16)]
+    bindings: Annotated[list[SymbolBinding], Field(max_length=16)]
+    comparison: Annotated[str, Field(max_length=2000)] | None
+
+
+class CalculationResult(Contract):
+    status: Literal["ok", "invalid", "timeout", "unavailable"]
+    value: Annotated[str, Field(max_length=4000)] | None
+    reason: Annotated[str, Field(max_length=128)] | None
+
+    @model_validator(mode="after")
+    def check_result(self):
+        if self.status == "ok":
+            if self.value is None or self.reason is not None:
+                raise ValueError("Successful calculations require a value and no failure reason")
+        elif self.value is not None or self.reason is None:
+            raise ValueError("Failed calculations require a reason and no value")
+        return self
+
+
+class MathQuestion(Contract):
+    text: Annotated[str, Field(min_length=1, max_length=6000)]
+    goal: Annotated[str, Field(min_length=1, max_length=2000)]
+    conditions: Annotated[list[Annotated[str, Field(min_length=1, max_length=1000)]],
+                          Field(max_length=16)]
+    parts: Annotated[list[Annotated[str, Field(min_length=1, max_length=2000)]], Field(max_length=12)]
+    diagram: Annotated[str, Field(max_length=4000)]
+    points: Annotated[list[KnowledgeCandidate], Field(max_length=4)]
+
+
+class OpenSolution(Contract):
+    index: Annotated[int, Field(ge=0, lt=MAX_ITEMS_PER_PAGE)]
+    answer: AnswerText | None
+    explanation: Annotated[str, Field(max_length=4000)]
+    assumptions: Annotated[list[Annotated[str, Field(min_length=1, max_length=500)]], Field(max_length=12)]
+    calculation: Calculation | None
+    calculation_role: Literal["answer", "intermediate"] = "answer"
+
+
+class OpenSolutions(Contract):
+    solutions: Annotated[list[OpenSolution], Field(max_length=MAX_ITEMS_PER_PAGE)]
+
+
+class OpenReview(Contract):
+    index: Annotated[int, Field(ge=0, lt=MAX_ITEMS_PER_PAGE)]
+    source_consistent: bool
+    references_agree: bool
+    unambiguous: bool
+    outcome: Outcome
+    feedback: Annotated[str, Field(min_length=1, max_length=4000)]
+    steps: Annotated[list[Annotated[str, Field(min_length=1, max_length=1000)]], Field(max_length=12)]
+
+
+class OpenReviews(Contract):
+    reviews: Annotated[list[OpenReview], Field(max_length=MAX_ITEMS_PER_PAGE)]
+
+
+class OpenAssessment(Contract):
+    first: OpenSolution
+    second: OpenSolution
+    review: OpenReview
+    first_tool: CalculationResult | None
+    second_tool: CalculationResult | None
+
+
 class KnowledgeDiscoveryItem(Contract):
     label: Annotated[str, Field(min_length=1, max_length=32)]
     region: Region
@@ -375,3 +453,6 @@ AgentResult = (
     AnalysisResult | PracticeResult | EnglishAnalysisResult | EnglishPracticeResult | EnglishFeedbackResult
     | KnowledgeDiscoveryResult | KnowledgePracticeResult | KnowledgeFeedbackResult
 )
+
+for _model in (ReadItem, ReadPage, AnalyzedItem, AnalyzePage, AnalysisResult):
+    _model.model_rebuild()

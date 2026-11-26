@@ -60,7 +60,12 @@ class HttpAgent:
                 raise AgentFailure("agent_unavailable", retryable=True) from exc
             headers["Authorization"] = f"Bearer {token.token}"
         try:
-            response = self.client.post(self.url, json=request.model_dump(mode="json"), headers=headers)
+            timeout = self.client.timeout
+            if not (isinstance(request, AnalyzePage) and request.version == "2"):
+                timeout = httpx.Timeout(min(timeout.read or 125, 125), connect=10)
+            response = self.client.post(
+                self.url, json=request.model_dump(mode="json"), headers=headers, timeout=timeout,
+            )
         except httpx.RequestError as exc:
             raise AgentFailure("agent_unavailable", retryable=True) from exc
         if response.status_code == 424:

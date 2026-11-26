@@ -41,6 +41,7 @@ from edu_domain.math import MathError, Verified, verify
 logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3
 LEASE_MS = 15 * 60_000
+WORKER_TIMEOUT_SECONDS = 2 * 60 * 60
 JOB_ERRORS = {
     "agent_unavailable": "分析服务暂时不可用，请稍后重试。",
     "agent_invalid_result": "分析结果无法读取，请稍后重试。",
@@ -99,13 +100,19 @@ def _claim(runtime: Runtime, job_id: str | None) -> Work | None:
         return Work(job.id, job.lease_token, job.submission_id, job.practice_id, job.english_id, job.knowledge_id)
 
 
-def _analyze(runtime: Runtime, agent: Agent, submission_id: str) -> dict:
+def _analyze(runtime: Runtime, agent: Agent, work: Work) -> dict:
+    from edu_app.knowledge import catalog
+
+    assert work.submission_id is not None
+    submission_id = work.submission_id
     with runtime.db.session() as session:
         pages = list(
             session.scalars(select(Page).where(Page.submission_id == submission_id).order_by(Page.number))
         )
+        points = catalog(session, "math")
     results = []
     for page in pages:
+        _renew(runtime, work)
         try:
             data = runtime.assets.get(page.object_key)
         except AssetNotFound as exc:
@@ -115,17 +122,25 @@ def _analyze(runtime: Runtime, agent: Agent, submission_id: str) -> dict:
         try:
             result = agent.invoke(
                 AnalyzePage(
-                    version=SCHEMA_VERSION,
+                    version="2",
                     operation="analyze_submission",
                     image_base64=b64encode(data).decode("ascii"),
+                    catalog=points,
                 )
             )
         except DemoImageOnly as exc:
             raise AgentFailure("demo_image_only") from exc
         if not isinstance(result, AnalysisResult):
             raise AgentFailure("agent_invalid_result", retryable=True)
+        known = {point.id for point in points}
+        if any(
+            candidate.existing_id and candidate.existing_id not in known
+            for item in result.items if item.source.question
+            for candidate in item.source.question.points
+        ):
+            raise AgentFailure("agent_invalid_result", retryable=True)
         results.append((page.number, result))
-    return make_report(submission_id, results)
+    return make_report(submission_id, results, before_item=lambda: _renew(runtime, work))
 
 
 def _practice(runtime: Runtime, agent: Agent, practice_id: str) -> PracticeBatch:
@@ -185,6 +200,15 @@ def _fail(runtime: Runtime, work: Work, failure: AgentFailure):
         logger.warning("job_attempt_failed id=%s code=%s retry=%s", job.id, failure.code, retry)
 
 
+def _renew(runtime: Runtime, work: Work) -> None:
+    with runtime.db.transaction() as session:
+        job = _lease(session, work)
+        if not job:
+            logger.warning("job_lease_lost id=%s", work.id)
+            raise AgentFailure("interrupted")
+        job.lease_until = now_ms() + LEASE_MS
+
+
 def run_one(runtime: Runtime, agent: Agent, job_id: str | None = None) -> bool:
     work = _claim(runtime, job_id)
     if not work:
@@ -217,17 +241,20 @@ def run_one(runtime: Runtime, agent: Agent, job_id: str | None = None) -> bool:
             _complete(job)
     elif work.submission_id:
         try:
-            report = _analyze(runtime, agent, work.submission_id)
+            report = _analyze(runtime, agent, work)
         except AgentFailure as exc:
             _fail(runtime, work, exc)
             return True
-        with runtime.db.transaction() as session:
-            job = _lease(session, work)
-            if not job:
-                return True
-            submission = session.get_one(Submission, work.submission_id, with_for_update=True)
-            save_report(session, submission, report)
-            _complete(job)
+        try:
+            with runtime.db.transaction() as session:
+                job = _lease(session, work)
+                if not job:
+                    return True
+                submission = session.get_one(Submission, work.submission_id, with_for_update=True)
+                save_report(session, submission, report)
+                _complete(job)
+        except ValueError:
+            _fail(runtime, work, AgentFailure("agent_invalid_result", retryable=True))
     else:
         assert work.practice_id is not None
         try:

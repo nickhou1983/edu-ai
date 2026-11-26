@@ -6,7 +6,7 @@ from sqlalchemy import and_, or_, select
 
 from edu_app.agent_client import Agent
 from edu_app.db import Job, now_ms
-from edu_app.jobs import LEASE_MS, run_one
+from edu_app.jobs import WORKER_TIMEOUT_SECONDS, run_one
 from edu_app.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ def consume_message(runtime: Runtime, agent: Agent):
 
     with (
         _client(runtime) as client,
-        AutoLockRenewer(max_lock_renewal_duration=LEASE_MS / 1000 + 60) as renewer,
+        AutoLockRenewer(max_lock_renewal_duration=WORKER_TIMEOUT_SECONDS + 60) as renewer,
         client.get_queue_receiver(runtime.settings.service_bus_queue, auto_lock_renewer=renewer) as receiver,
     ):
         for message in receiver.receive_messages(max_message_count=1, max_wait_time=5):

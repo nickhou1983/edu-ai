@@ -60,3 +60,55 @@ def runtime(tmp_path, request):
 def client(runtime):
     with TestClient(build_app(runtime), headers={"X-Demo-Student": "demo-a"}) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def open_math_item():
+    from edu_domain.contracts import (
+        AnalyzedItem,
+        Calculation,
+        KnowledgeCandidate,
+        MathQuestion,
+        OpenAssessment,
+        OpenReview,
+        OpenSolution,
+        ReadItem,
+        Region,
+        SymbolBinding,
+    )
+    from edu_domain.symbolic import calculate
+
+    computation = Calculation(
+        operation="evaluate", expression="-a^2*b+(-8*a*b^2-a^2*b)-2*(5*a*b^2-a^2*b)",
+        variables=["a", "b"], bindings=[
+            SymbolBinding(symbol="a", value="-1"), SymbolBinding(symbol="b", value="1/3"),
+        ], comparison=None,
+    )
+    question = MathQuestion(
+        text="先化简再求值：-a^2*b+(-8*a*b^2-a^2*b)-2*(5*a*b^2-a^2*b)，其中a=-1，b=1/3。",
+        goal="化简并代入求值", conditions=["a=-1", "b=1/3"], parts=["化简", "求值"], diagram="",
+        points=[KnowledgeCandidate(
+            existing_id=None, title="整式化简与代入求值", unit="整式运算", description="展开括号合并同类项后代入求值。",
+        )],
+    )
+    solution = OpenSolution(
+        index=0, answer="2", explanation="化简得到-18*a*b^2，代入得到2。",
+        assumptions=[], calculation=computation,
+    )
+    return AnalyzedItem(
+        source=ReadItem(
+            label="15", region=Region(left=0, top=0, right=1000, bottom=1000),
+            stem=question.text, task=None, expression=None, choices=[], readable=True,
+            mark="present", answer="-2", steps=["18*a*b^2"], question=question,
+        ),
+        spec=None, candidate=None,
+        assessment=OpenAssessment(
+            first=solution, second=solution.model_copy(),
+            review=OpenReview(
+                index=0, source_consistent=True, references_agree=True, unambiguous=True,
+                outcome="incorrect", feedback="去括号时丢失了负号，正确化简结果为-18*a*b^2，代入应为2。",
+                steps=["检查-2乘括号中的每一项。"],
+            ),
+            first_tool=calculate(computation), second_tool=calculate(computation),
+        ),
+    )

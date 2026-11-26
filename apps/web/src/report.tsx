@@ -6,6 +6,17 @@ import {
 } from "./api";
 import { dateText, Empty, Icon, Problem, Progress, useRemote } from "./ui";
 
+const reasonNames: Record<string, string> = {
+  ambiguous_image: "题图不完整或识别有歧义", incomplete_question: "缺少完整题目",
+  source_mismatch: "转写与原图不一致", model_disagreement: "独立解题结论冲突",
+  missing_information: "题目缺少条件或存在歧义", missing_review: "独立复核结果不完整",
+  answer_unclear: "作答无法可靠识别", mark_mismatch: "留白标记与作答矛盾",
+  tool_failure: "计算工具未完成核验", tool_limit: "计算资源预算不足",
+  invalid_tool_evidence: "计算证据无法复现", invalid_review: "复核题号不一致",
+  invalid_partial: "部分正确缺少步骤依据", review_disagreement: "判分与等价性检查冲突",
+  review_inconclusive: "复核尚无可靠结论", verification_failed: "未获得可靠核验结果",
+};
+
 function OriginalPage({ api, id, page, item }: { api: Api; id: string; page: number; item?: GradedItem }) {
   const [src, setSrc] = useState("");
   const [error, setError] = useState("");
@@ -159,13 +170,27 @@ export function ReportView({ api, id, initialItem, back, practice }: {
           </ul>
           {item && <div className="detail-sheet">
             <strong>第 {item.label} 题 · {outcomeNames[item.outcome]}</strong>
+            <p className="small muted">
+              {item.verification === "ai_review" ? "AI 独立解题与复核"
+                : item.verification === "unresolved" ? "尚未完成可靠核验" : "确定性规则核验"}
+              {item.toolChecked && " · 计算工具结果已复算"}
+            </p>
+            {item.stem && <p>{item.stem}</p>}
             {!!item.choices.length && <p className="choices-read">{item.choices.map((choice, index) =>
               <span key={index}>{String.fromCharCode(65 + index)}. {choice}</span>)}</p>}
             <dl className="facts">
               <div><dt>识别出的作答{item.corrected && "（已核对）"}</dt><dd>{item.answer ?? "—"}</dd></div>
-              {item.expected && <div><dt>核验结果</dt><dd>{item.expected}</dd></div>}
+              {item.expected && <div><dt>{item.verification === "ai_review" ? "AI 复核参考答案" : "核验结果"}</dt>
+                <dd>{item.expected}</dd></div>}
             </dl>
             <p>{item.feedback}</p>
+            {!!item.stepFeedback?.length && <ul>{item.stepFeedback.map((text, index) =>
+              <li key={index}>{text}</li>)}</ul>}
+            {!!item.knowledgeTitles?.length && <p className="small">关联知识点：{item.knowledgeTitles.join("、")}</p>}
+            {item.reason && <p className="small muted">核验原因：{reasonNames[item.reason] ?? item.reason}</p>}
+            {item.verification === "ai_review" && <p className="small muted">
+              AI 复核不是数学证明，可能存在误判；此题不计入确定性掌握度。
+            </p>}
             {item.corrected && <p className="small muted">此题为转写核对结果，未计入掌握度。</p>}
             <div className="actions">
               {item.canCorrect && <Transcription key={`${item.id}-${data.revision}`} api={api}

@@ -89,9 +89,13 @@ import edu_agent.english_demo
 import edu_agent.knowledge_demo
 import edu_domain.english
 import edu_app.knowledge_api
+from edu_domain.contracts import Calculation
+from edu_domain.symbolic import calculate
 for module in (edu_app.api, edu_app.jobs, edu_agent.english_demo, edu_agent.knowledge_demo,
                edu_app.knowledge_api, edu_domain.english):
     assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__
+request = Calculation(operation="evaluate", expression="(-1)^1000001", variables=[], bindings=[], comparison=None)
+assert calculate(request).value == "-1"
 """
     environment = {key: value for key, value in os.environ.items() if not key.startswith(("EDU_", "PYTHON"))}
     subprocess.run(
