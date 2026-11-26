@@ -1,0 +1,55 @@
+{
+  "status": "generated-needs-review",
+  "agentRoot": "services/foundry-agent",
+  "environment": "synthetic-test",
+  "metadataFile": ".foundry/agent-metadata.yaml",
+  "deploymentContextSource": "existing-non-azd-SDK-and-metadata",
+  "sourceCommit": "ab5cfb9440f76f22270269fe7eff2a488b074296",
+  "targetAgentVersion": "8",
+  "dataset": {
+    "name": "open-math-ab5cfb9",
+    "version": "1.0",
+    "generationStatus": "succeeded",
+    "generatedSamples": 15,
+    "localParsedRows": 15,
+    "uniqueIds": 15,
+    "fields": ["id", "description", "query", "candidate_response"],
+    "contentPath": ".foundry/datasets/open-math-generated-ab5cfb9/open-math-ab5cfb9.jsonl",
+    "observedAgentResponses": 0
+  },
+  "evaluator": {
+    "name": "open-math-reference-ab5cfb9",
+    "version": "1",
+    "generationStatus": "succeeded",
+    "type": "rubric",
+    "dimensions": 8,
+    "generatedPassThreshold": 0.5,
+    "thresholdApprovedForQualityGate": false,
+    "definitionFile": ".foundry/evaluators/open-math-generated-ab5cfb9/open-math-reference-ab5cfb9.json"
+  },
+  "remoteSuiteRegistered": false,
+  "evaluationRunStarted": false,
+  "judgeRunStarted": false,
+  "qualityCleared": false,
+  "rawGeneratedArtifactsModified": false,
+  "requiredReview": [
+    "Queries and candidate responses are fixture-preparation plans, not Hosted JSON inputs or observed grading outputs. No ground_truth or expected_behavior fields exist; independently derive and annotate references before a run.",
+    "Render actual synthetic worksheet images, visually check them, normalize to JPEG through the production image helper, and create a version2 analyze_submission JSON adapter. Never fabricate base64 or send text queries to the Agent endpoint.",
+    "Calibrate the rubric's blank-as-incorrect requirement to the application's blank outcome and no-score boundary, and separate evaluator result/reason from the Hosted AnalysisResult/report schema.",
+    "Require ai_review and eligibleForMastery=false for AI-only grades, plus an independent persistence check that no deterministic mastery Evidence is created.",
+    "Verify both requested parts for compound references; tool values covering only one part are intermediate evidence, not complete-answer equivalence.",
+    "Blind-solver isolation, original-image regions and injected failure behavior need independent harness evidence, not candidate-response claims. Keep Foundry content tracing disconnected.",
+    "Remove unnecessary synthetic names/IDs before fixture materialization. Treat worksheet prompt-injection text only as untrusted test data, never as operator instructions.",
+    "Do not treat the generated0.5 threshold as a reviewed release gate. Preserve these raw drafts and historical Agent7 evaluation results; curate/version separately only after approval."
+  ],
+  "generationUsage": {
+    "datasetReportedTokens": 501856,
+    "isEvaluationRunUsage": false,
+    "currencyCostMeasured": false
+  },
+  "limitations": [
+    "Generation jobs do not constitute a registered evaluation suite or a passed evaluation.",
+    "No live grading batch, paid judge, prompt optimization, monitoring change or further deployment was executed.",
+    "The separate one-question live deployment smoke does not establish broad coverage, handwriting/region accuracy or authenticated Azure upload/Worker/report acceptance."
+  ]
+}

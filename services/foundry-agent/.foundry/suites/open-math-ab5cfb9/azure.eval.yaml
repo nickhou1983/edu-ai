@@ -1,0 +1,15 @@
+evaluators:
+  - name: open-math-reference-ab5cfb9
+    source: ./../../evaluators/open-math-generated-ab5cfb9/open-math-reference-ab5cfb9.json
+    displayName: open-math-reference-ab5cfb9
+    categories:
+      - quality
+      - agents
+    supportedEvaluationLevels:
+      - turn
+      - conversation
+datasets:
+  - name: open-math-ab5cfb9
+    file: ./../../datasets/open-math-generated-ab5cfb9/open-math-ab5cfb9.jsonl
+    tags:
+      evaluation_level: turn

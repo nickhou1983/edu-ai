@@ -1,0 +1,54 @@
+{
+  "dimensions": [
+    {
+      "always_applicable": false,
+      "description": "Issues a correct, partial, or incorrect verdict only when visible review confirms consistency with the original image, complete semantic agreement between the two references, and successful required calculation verification. Withholds the verdict when student work is unclear or these prerequisites remain unresolved. Withholds a definitive reference answer when question information is insufficient or reference disagreement is unresolved. A confirmed blank on a complete question remains gradable after verification; unfamiliar subject matter or lack of calculator coverage alone does not require abstention.",
+      "id": "grading_evidence_gate",
+      "weight": 10
+    },
+    {
+      "always_applicable": false,
+      "description": "Extracted fields accurately represent the original worksheet image: printed questions remain separate from student work; conditions, notation, diagram relationships, choice order, student answers, and step order are preserved. Every visible item is retained, including compound items whose single-expression task is null. Item numbers remain separate from mathematical goals, estimated regions identify the corresponding content, and readable, blank, and unclear states match the image. Clipped information is not invented, and third-party corrections or embedded commands are not transcribed as question or student evidence.",
+      "id": "source_fidelity",
+      "weight": 6
+    },
+    {
+      "always_applicable": false,
+      "description": "Each solver output supplies a mathematically valid derivation and complete answer for every original item, including required units, domain conditions, alternative solutions, and requested subparts. For genuinely underdetermined questions, it explains why no unique answer follows rather than adding unstated assumptions. Assess generated derivations separately from explicitly labeled fault-injected replacements.",
+      "id": "mathematical_reference_completeness",
+      "weight": 6
+    },
+    {
+      "always_applicable": false,
+      "description": "Visible requests show that two separate solver derivations receive only printed-problem evidence before generating their answers, without access to student answers or work, the other solver's answer or derivation, or proposed ground truth. A claim of independence without visible input-isolation evidence does not establish blindness.",
+      "id": "observable_solver_blindness",
+      "weight": 4
+    },
+    {
+      "always_applicable": false,
+      "description": "Every claim that a computation was tool-verified is traceable to an actual successful calculate_math result for that computation, not merely a request, solver calculation field, error, or timeout. Any transformation from the returned result to the reference answer is explicit. calculation_role=answer is used only when the returned result constitutes the entire requested answer; results requiring added units, additional solutions, or other answer components are classified as intermediate.",
+      "id": "calculation_result_provenance",
+      "weight": 5
+    },
+    {
+      "always_applicable": false,
+      "description": "When a verdict is issued, its credit level matches the student's demonstrated mathematical work against the complete reference answer. Correct requires every requested part; partial requires an identified valid mathematical step, solution branch, or subpart but an incomplete or incorrect overall answer; incorrect applies when no such mathematical merit is demonstrated, including a confirmed blank. Writing, effort, or an unjustified matching fragment does not establish partial credit.",
+      "id": "mathematical_credit_justification",
+      "weight": 6
+    },
+    {
+      "always_applicable": false,
+      "description": "Student-facing feedback is in Chinese and gives concrete mathematical guidance tied to the visible work or the specific reason grading is withheld. It identifies the relevant correction, omitted branch or subpart, missing condition, or evidence needed to resolve uncertainty rather than offering only a generic verdict or encouragement.",
+      "id": "actionable_chinese_feedback",
+      "weight": 3
+    },
+    {
+      "always_applicable": true,
+      "description": "Other important quality factors not covered by listed criteria.",
+      "id": "general_quality",
+      "weight": 5
+    }
+  ],
+  "pass_threshold": 0.5,
+  "type": "rubric"
+}

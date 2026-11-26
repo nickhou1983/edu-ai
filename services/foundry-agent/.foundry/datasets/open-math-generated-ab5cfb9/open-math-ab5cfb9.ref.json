@@ -1,0 +1,21 @@
+{
+  "name": "open-math-ab5cfb9",
+  "version": "1.0",
+  "uri": "azureai://accounts/ai-edu-ai-test-c2d102/projects/proj-edu-ai-test-c2d102/data/open-math-ab5cfb9/versions/1.0",
+  "generationJobId": "datagen-de4f93125e05427aaad42b5a72b8a69b",
+  "generationStatus": "succeeded",
+  "generatedSamples": 15,
+  "contentFile": "open-math-ab5cfb9.jsonl",
+  "contentSha256": "d90b56bac55cc97ae409fff9824524ec06c011618fc50bd65892d793a89fb53f",
+  "sourceCommit": "ab5cfb9440f76f22270269fe7eff2a488b074296",
+  "targetAgentVersion": "8",
+  "generationModelDeployment": "gpt-6.1-sol",
+  "generationTokenUsage": {
+    "total_tokens": 501856,
+    "prompt_tokens": 327783,
+    "completion_tokens": 174073
+  },
+  "syntheticOnly": true,
+  "evaluationRunStarted": false,
+  "contentStatus": "generated-needs-review"
+}

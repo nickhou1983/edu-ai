@@ -3,9 +3,52 @@ environments:
   synthetic-test:
     projectEndpoint: https://ai-edu-ai-test-c2d102.services.ai.azure.com/api/projects/proj-edu-ai-test-c2d102
     agentName: agent-edu-ai-test-c2d102
-    agentVersion: "7"
+    agentVersion: "8"
     azureContainerRegistry: creduaitestc2d102.azurecr.io
     evaluationSuites:
+      - id: open-math-generated
+        generationSource: synthetic
+        status: generated-needs-review
+        agentVersion: "8"
+        sourceCommit: ab5cfb9440f76f22270269fe7eff2a488b074296
+        remoteSuiteRegistered: false
+        generationJobs:
+          dataset: datagen-de4f93125e05427aaad42b5a72b8a69b
+          evaluator: evaluatorgen-open-math-reference-ab5cfb9-v1-a0fdac51
+        generationModelDeployment: gpt-6.1-sol
+        maxSamples: 15
+        generatedSamples: 15
+        dataset: open-math-ab5cfb9
+        datasetVersion: "1.0"
+        datasetFile: .foundry/datasets/open-math-generated-ab5cfb9/open-math-ab5cfb9.ref.json
+        datasetContentPath: .foundry/datasets/open-math-generated-ab5cfb9/open-math-ab5cfb9.jsonl
+        datasetUri: azureai://accounts/ai-edu-ai-test-c2d102/projects/proj-edu-ai-test-c2d102/data/open-math-ab5cfb9/versions/1.0
+        instructionFile: .foundry/suites/open-math-agent-instructions-ab5cfb9.txt
+        configFile: .foundry/suites/open-math-ab5cfb9/azure.eval.yaml
+        reviewFile: .foundry/suites/open-math-ab5cfb9/review.json
+        evaluators:
+          - name: open-math-reference-ab5cfb9
+            version: "1"
+            threshold: 0.5
+            thresholdSource: generated-unreviewed
+            definitionFile: .foundry/evaluators/open-math-generated-ab5cfb9/open-math-reference-ab5cfb9.json
+        requiresReviewBeforeRun: true
+        requiresHostedJsonAdapter: true
+        requiresSyntheticFixtureMaterialization: true
+        evaluationRunStarted: false
+        reviewNotes:
+          - Generation is not an observed Agent answer or a passed evaluation.
+          - All15 rows are fixture-preparation plans, not executable analyze_submission requests; no ground_truth or expected_behavior fields were generated.
+          - The actual Agent requires normalized JPEG transport; never send a text query or invented base64 directly.
+          - Review the rubric's blank-as-incorrect requirement against the actual blank outcome and no-score behavior.
+          - The generated rubric does not explicitly check deterministic mastery eligibility; add a reviewed structural check before running.
+          - Blindness and source-region fidelity require independent evidence; content tracing remains intentionally disabled.
+          - The generated0.5 threshold is not an approved release or quality gate.
+          - Dataset-generation usage reported501856 tokens; this is generation usage, not grading-run usage or an actual currency charge.
+        tags:
+          tier: smoke
+          purpose: baseline
+          stage: generated
       - id: knowledge-smoke
         generationSource: synthetic
         status: generated-needs-review
