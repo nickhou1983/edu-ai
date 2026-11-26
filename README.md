@@ -2,9 +2,51 @@
 
 面向初一学生的数学和英语学习助手。上传作业或试卷图片，查看逐题批改和知识点掌握情况，再按薄弱项练习。数学保留确定性规则练习；英语词汇、语法和阅读可做客观判分，写作和听说文本只提供文字建议。
 
-[本地运行](#本地运行) · [Azure 部署与运维](infra/README.md) · [批改与掌握度](#批改与掌握度)
+[组件架构图](#组件架构图) · [Agent 工作流程图](#agent-工作流程图) · [本地运行](#本地运行) · [批改与掌握度](#批改与掌握度) · [Azure 部署与运维](infra/README.md)
 
 ## 组件与数据流
+
+### 组件架构图
+
+下图为 Azure 合成测试环境。实线表示运行时交互，虚线表示镜像发布或数据库迁移。
+
+```mermaid
+flowchart TD
+    Web["学生浏览器<br/>React / Vite"]
+    Entra["Microsoft Entra ID"]
+    Registry["Azure Container Registry"]
+
+    subgraph Apps["Azure Container Apps"]
+        API["FastAPI<br/>提供前端与业务 API"]
+        Worker["后台 Worker<br/>事件作业"]
+        Migration["数据库迁移<br/>手动作业"]
+    end
+
+    Queue["Azure Service Bus<br/>任务队列"]
+    DB[("私网 PostgreSQL<br/>任务、报告、掌握度证据")]
+    Blob[("私有 Blob Storage<br/>处理后的题图")]
+
+    subgraph Foundry["Microsoft Foundry 项目"]
+        Agent["Hosted Agent<br/>Invocations 入口"]
+        Model["模型部署"]
+        Agent -->|"请求推理"| Model
+    end
+
+    Web <-->|"登录 / 访问令牌"| Entra
+    Web <-->|"HTTPS 上传、练习、轮询结果"| API
+    API -->|"写入任务、读取结果"| DB
+    API -->|"保存题图"| Blob
+    API -->|"派发任务 ID"| Queue
+    Queue -->|"触发 Worker"| Worker
+    Worker -->|"读取任务、保存结果"| DB
+    Worker -->|"读取题图"| Blob
+    Worker <-->|"托管身份调用 / 结构化结果"| Agent
+    Registry -.->|"edu-app 镜像"| Apps
+    Registry -.->|"edu-agent 镜像"| Agent
+    Migration -.->|"初始化数据库 / 执行迁移"| DB
+```
+
+Agent 不直接访问数据库、Blob 或队列；Worker 只在需要时读取并传入题图。API 验证访问令牌并按所有者限制读取。网络、日志和发布权限见 [Azure 运维手册](infra/README.md#环境与权限)。
 
 | 组件 | 本地合成演示 | Azure 合成测试环境 |
 | --- | --- | --- |
@@ -13,8 +55,6 @@
 | 数据库和题图 | SQLite 和 `.edu-ai/` 下的私有图片目录 | 私网 PostgreSQL Flexible Server 和私有 Blob Storage |
 | 批改、出题与反馈 | 固定合成样例；不调用模型 | Microsoft Foundry 项目、Hosted Agent 和支持图像及结构化输出的模型 |
 | 登录、镜像与运维 | 两个本地演示账号，不需要 Azure | Microsoft Entra ID、托管身份、Azure Container Registry、VNet / 私有 DNS、Azure Monitor |
-
-上传时，API 保存题图并在数据库中创建任务。Azure 上由 API 从数据库派发任务 ID，Service Bus 触发 Worker。Worker 读取相应题图，调用 Agent 并保存报告和掌握度证据；浏览器轮询 API 查看结果，不直接访问队列、数据库或 Agent。
 
 每次可上传 1–4 页单帧 JPG/JPEG 或 PNG，每张最多 8 MB、6400 万像素，宽高均至少 120 像素。服务端校正方向、清除元数据并按比例缩小，保存为最长边不超过 1800 像素、不超过 500 KB 的 JPEG，不改动本地原图。
 
@@ -35,6 +75,50 @@ EDU_MODE=local .venv/bin/python -m edu_app serve --with-worker
 已有本地数据时，升级代码后先运行 `migrate` 再启动。连接真实 Agent 不是演示的必要条件；本地 API 只接受回环地址的 `EDU_AGENT_URL`，开启真实 AI 批改前必须配置该地址。
 
 ## 批改与掌握度
+
+### Agent 工作流程图
+
+下图以启用全 AI 批改的数学、英语作业和英语客观练习为主，标出 Agent 与 Worker 的分工。
+
+```mermaid
+flowchart TD
+    Request["Worker 按任务类型调用 Agent"]
+
+    subgraph AgentFlow["Hosted Agent"]
+        Route{"识别请求类型"}
+        Read["转写当前页的题目、条件和学生作答"]
+        Text["使用已保存的练习题面和作答"]
+        Blind["两次独立盲解<br/>各自只看题面，不看学生作答或对方答案"]
+        Review["结合参考解答与学生作答复核<br/>作业查看原图，在线练习只用文本"]
+        Other["按操作生成练习、发现知识点<br/>或提供表达题文字反馈"]
+        Result["返回结构化结果和版本信息"]
+
+        Route -->|"数学 / 英语作业"| Read
+        Route -->|"英语客观练习判分"| Text
+        Route -->|"重试待复核：复用转写"| Blind
+        Route -->|"出题、发现或反馈"| Other
+        Read -->|"可读的判分题"| Blind
+        Read -->|"英语表达题"| Other
+        Read -->|"题面不清或条件不全"| Result
+        Text --> Blind
+        Blind -->|"可复核"| Review
+        Blind -->|"证据不足或分析未完成时标记状态"| Result
+        Review --> Result
+        Other --> Result
+    end
+
+    subgraph WorkerFlow["应用 Worker"]
+        Validate["校验结构化结果及依据<br/>决定是否判分与归入主考点"]
+        Save["保存报告、练习或反馈<br/>仅合格判分写入掌握度证据"]
+        Validate --> Save
+    end
+
+    Request --> Route
+    Result --> Validate
+    Save --> View["学生通过 API 查看结果"]
+```
+
+数学复核可用受限的 SymPy 工具核验计算，Worker 会复验声明的计算；英语在线练习由 Worker 额外比对发布时的参考答案。已完成页可恢复；对「待复核」题的重试复用原图和已有转写，不重新批改整份作业。
 
 | 场景 | 批改与反馈 |
 | --- | --- |
