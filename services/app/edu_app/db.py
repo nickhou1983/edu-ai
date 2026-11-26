@@ -57,6 +57,7 @@ class Page(Base):
     )
     number: Mapped[int] = mapped_column(Integer, primary_key=True)
     object_key: Mapped[str] = mapped_column(String(96))
+    analysis_checkpoint: Mapped[dict | None] = mapped_column(JSON_DOCUMENT, deferred=True)
 
 
 class Report(Base):

@@ -7,7 +7,7 @@ from PIL import Image
 
 from edu_agent.demo import DemoAgent, demo_analysis, demo_page, demo_practice
 from edu_app.agent_client import AgentFailure
-from edu_app.db import Evidence, Job, Report, new_id, now_ms
+from edu_app.db import Evidence, Job, Page, Report, new_id, now_ms
 from edu_app.jobs import LEASE_MS, MAX_ATTEMPTS, _claim, _fail, run_one
 from edu_app.queue import _dispatch
 from edu_domain.contracts import MAX_UPLOAD_BYTES, ProblemSpec
@@ -124,6 +124,40 @@ def test_open_analysis_http_budget_does_not_extend_other_operations(tmp_path):
     finally:
         agent.close()
     assert budgets == [600, 125]
+
+
+@pytest.mark.parametrize(("status", "body", "code", "retry_after"), [
+    (None, {}, "agent_timeout", None),
+    (408, {}, "agent_timeout", None),
+    (503, {"error": "model_http_timeout"}, "agent_timeout", None),
+    (503, {"error": "model_rate_limited"}, "agent_rate_limited", 30),
+    (503, {"error": "unknown"}, "agent_unavailable", None),
+])
+def test_agent_client_keeps_timeout_and_retry_after_separate(tmp_path, caplog, status, body, code, retry_after):
+    import httpx
+
+    from edu_app.agent_client import HttpAgent
+    from edu_app.config import Settings
+    from edu_domain.contracts import AnalyzePage
+
+    settings = Settings(_env_file=None, mode="local", data_dir=tmp_path, agent_url="http://127.0.0.1:8080")
+    agent = HttpAgent(settings, None)
+    agent.client.close()
+
+    def respond(request):
+        if status is None:
+            raise httpx.ReadTimeout("private-error-detail", request=request)
+        return httpx.Response(status, json=body, headers={"Retry-After": "30"})
+
+    agent.client = httpx.Client(transport=httpx.MockTransport(respond), timeout=settings.agent_timeout_seconds)
+    try:
+        with pytest.raises(AgentFailure) as failure:
+            agent.invoke(AnalyzePage(version="2", operation="analyze_submission", image_base64="aaaa"))
+    finally:
+        agent.close()
+    assert (failure.value.code, failure.value.retryable, failure.value.retry_after) == (code, True, retry_after)
+    assert ("ReadTimeout" if status is None else f"http_status={status}") in caplog.text
+    assert "private-error-detail" not in caplog.text
 
 
 @pytest.mark.parametrize(("upload_path", "record_path"), [
@@ -321,15 +355,21 @@ def test_transient_job_failure_recovers_with_one_manual_retry_and_a_new_lease(cl
     job_id = submission["jobId"]
     detail_path = f"/api/submissions/{submission['id']}"
     agent = Mock(spec=DemoAgent)
-    agent.invoke.side_effect = AgentFailure("agent_unavailable", retryable=True)
+    agent.invoke.side_effect = AgentFailure("agent_timeout", retryable=True)
     clock = [now_ms() + 1_000]
     monkeypatch.setattr("edu_app.jobs.now_ms", lambda: clock[0])
+    monkeypatch.setattr("edu_app.jobs.randint", lambda low, high: high)
     for attempt in range(1, MAX_ATTEMPTS + 1):
         assert run_one(runtime, agent, job_id)
         assert not run_one(runtime, agent, job_id)
         info = client.get(detail_path).json()
         assert info["status"] == ("queued" if attempt < MAX_ATTEMPTS else "failed")
-        clock[0] += attempt * 3_000
+        if attempt < MAX_ATTEMPTS:
+            with runtime.db.session() as session:
+                delay = session.get(Job, job_id).available_at - clock[0]
+            assert delay == 15_000 * (2 ** (attempt - 1)) + 5_000
+            clock[0] += delay
+    assert "分析超时" in info["error"] and "无需重新上传" in info["error"]
     assert info["canRetry"] is True
 
     retry = client.post(f"{detail_path}/retry")
@@ -344,6 +384,200 @@ def test_transient_job_failure_recovers_with_one_manual_retry_and_a_new_lease(cl
     detail = client.get(detail_path).json()
     assert (detail["status"], detail["revision"], detail["canRetry"]) == ("done", 1, False)
     assert _skill(client)["sampleCount"] == 3
+
+
+def test_multipage_retry_resumes_from_checkpoint_and_cleans_up(client, runtime, monkeypatch):
+    image = BytesIO()
+    Image.new("RGB", (192, 192), "white").save(image, "PNG")
+    submission = _upload(client, demo_page(), image.getvalue())
+    job_id = submission["jobId"]
+    path = f"/api/submissions/{submission['id']}"
+    clock = [now_ms() + 1_000]
+    monkeypatch.setattr("edu_app.jobs.now_ms", lambda: clock[0])
+    monkeypatch.setattr("edu_app.jobs.randint", lambda low, high: high)
+    result = demo_analysis()
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.side_effect = [
+        result, AgentFailure("agent_rate_limited", retryable=True, retry_after=90),
+        result.model_copy(update={"quality": "unclear", "items": []}),
+    ]
+
+    assert run_one(runtime, agent, job_id)
+    with runtime.db.session() as session:
+        assert session.get(Page, (submission["id"], 1)).analysis_checkpoint is not None
+        assert session.get(Page, (submission["id"], 2)).analysis_checkpoint is None
+        assert session.get(Job, job_id).available_at - clock[0] == 95_000
+    assert client.get(path).json()["report"] is None
+    clock[0] += 94_999
+    assert not run_one(runtime, agent, job_id)
+    clock[0] += 1
+    assert run_one(runtime, agent, job_id)
+
+    first, failed, retried = [call.args[0] for call in agent.invoke.call_args_list]
+    assert first.image_base64 != failed.image_base64 == retried.image_base64
+    detail = client.get(path).json()
+    assert detail["status"] == "done"
+    assert detail["report"]["retakePages"] == [2]
+    assert {item["page"] for item in detail["report"]["items"]} == {1}
+    with runtime.db.session() as session:
+        assert all(page.analysis_checkpoint is None for page in session.query(Page).all())
+
+
+def test_review_retry_keeps_progress_and_concurrent_corrections(client, runtime, open_math_item, monkeypatch):
+    images = [demo_page()]
+    for shade in ("white", "gray"):
+        image = BytesIO()
+        Image.new("RGB", (192, 192), shade).save(image, "PNG")
+        images.append(image.getvalue())
+    submission = _upload(client, *images)
+    job_id = submission["jobId"]
+    path = f"/api/submissions/{submission['id']}"
+    pending = open_math_item.model_copy(update={"assessment": None, "review_timed_out": True})
+    last = pending.model_copy(update={"source": pending.source.model_copy(update={"label": "其他页"})})
+    original = demo_analysis()
+    initial = original.model_copy(update={"version": "2"})
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.side_effect = [
+        AgentFailure("agent_timeout"),
+        initial.model_copy(update={"items": [*original.items[:2], pending]}),
+        initial.model_copy(update={"items": [last]}),
+        initial.model_copy(update={"quality": "unclear", "items": []}),
+    ]
+    assert run_one(runtime, agent, job_id)
+    assert client.post(f"{path}/retry").status_code == 202
+    assert run_one(runtime, agent, job_id)
+
+    before = client.get(path).json()
+    assert before["canRetry"] and before["report"]["retakePages"] == [3]
+    verified, to_correct, first_pending, last_pending = before["report"]["items"]
+    with monkeypatch.context() as rollout:
+        rollout.setattr(runtime.settings, "math_review_retry_enabled", False)
+        disabled = client.get(path).json()
+        assert not disabled["canRetry"] and disabled["report"] == before["report"]
+        assert client.post(f"{path}/retry").status_code == 409
+    assert client.post(f"{path}/retry", headers=_OTHER_STUDENT).status_code == 404
+    queued = client.post(f"{path}/retry")
+    assert queued.status_code == 202 and queued.json()["jobId"] == job_id
+    assert client.post(f"{path}/retry").status_code == 409
+    assert _upload(client, *images)["id"] == submission["id"]
+    assert client.get(path).json()["report"] == before["report"]
+
+    first, second, _ = [call.args[0] for call in agent.invoke.call_args_list[-3:]]
+    clock = [now_ms() + 1_000]
+    monkeypatch.setattr("edu_app.jobs.now_ms", lambda: clock[0])
+
+    def review(request):
+        state = client.get(path).json()
+        assert state["status"] == "running" and not state["canRetry"]
+        if request.image_base64 == first.image_base64:
+            assert request.review_items == [pending.source]
+            assert not request.catalog
+            assert client.post(f"{path}/retry").status_code == 409
+            correction = client.patch(
+                f"{path}/items/{to_correct['id']}/transcription",
+                json={"answer": "8", "revision": state["revision"]},
+            )
+            assert correction.status_code == 200 and correction.json()["revision"] == 2
+            return initial.model_copy(update={"items": [open_math_item]})
+        assert request.image_base64 == second.image_base64
+        assert request.review_items == [last.source]
+        raise AgentFailure("agent_timeout", retryable=True)
+
+    agent.invoke.reset_mock(side_effect=True)
+    agent.invoke.side_effect = review
+    for _ in range(MAX_ATTEMPTS):
+        assert run_one(runtime, agent, job_id)
+        with runtime.db.session() as session:
+            clock[0] = session.get(Job, job_id).available_at
+    assert [call.args[0].image_base64 for call in agent.invoke.call_args_list] == [
+        first.image_base64, *[second.image_base64] * MAX_ATTEMPTS,
+    ]
+    after = client.get(path).json()
+    assert (after["status"], after["revision"], after["canRetry"]) == ("failed", 3, False)
+    assert after["error"] == "复核超时，已保留现有报告。"
+    assert client.post(f"{path}/retry").status_code == 409
+    assert after["report"]["retakePages"] == [3]
+    same, corrected, recovered, still_pending = after["report"]["items"]
+    assert same == verified and still_pending == last_pending
+    assert corrected["id"] == to_correct["id"] and corrected["corrected"] and corrected["answer"] == "8"
+    assert (recovered["id"], recovered["verification"], recovered["eligibleForMastery"]) == (
+        first_pending["id"], "ai_review", False,
+    )
+    with runtime.db.session() as session:
+        assert {entry.source_id for entry in session.query(Evidence).all()} == {verified["id"]}
+        assert session.get_one(Report, (submission["id"], 1)).document["items"][2]["reason"] == "review_timeout"
+        assert session.get_one(Report, (submission["id"], 2)).document["items"][1]["correction"] == "8"
+
+
+@pytest.mark.parametrize("failure", ["wrong_source", "wrong_index", "missing_assessment", "stale_lease"])
+def test_review_retry_does_not_replace_report_with_unusable_results(
+    client, runtime, open_math_item, monkeypatch, failure,
+):
+    submission = _upload(client, demo_page())
+    job_id = submission["jobId"]
+    path = f"/api/submissions/{submission['id']}"
+    pending = open_math_item.model_copy(update={"assessment": None, "review_timed_out": True})
+    analysis = demo_analysis().model_copy(update={"version": "2", "items": [pending]})
+    agent = Mock(spec=DemoAgent)
+    agent.invoke.return_value = analysis
+    assert run_one(runtime, agent, job_id)
+    before = client.get(path).json()
+    assert client.post(f"{path}/retry").status_code == 202
+
+    clock = [now_ms() + 1_000]
+    monkeypatch.setattr("edu_app.jobs.now_ms", lambda: clock[0])
+    item = open_math_item
+    if failure == "wrong_source":
+        item = item.model_copy(update={"source": item.source.model_copy(update={"answer": "2"})})
+    elif failure == "wrong_index":
+        assessment = item.assessment
+        item = item.model_copy(update={"assessment": assessment.model_copy(update={
+            "review": assessment.review.model_copy(update={"index": 1}),
+        })})
+    elif failure == "missing_assessment":
+        item = item.model_copy(update={"assessment": None})
+
+    def review(_request):
+        if failure == "stale_lease":
+            clock[0] += LEASE_MS + 1
+            assert _claim(runtime, job_id) is not None
+        return analysis.model_copy(update={"items": [item]})
+
+    agent.invoke.side_effect = review
+    assert run_one(runtime, agent, job_id)
+    after = client.get(path).json()
+    assert after["revision"] == before["revision"] == 1
+    assert after["report"] == before["report"]
+    assert after["status"] == ("running" if failure == "stale_lease" else "queued")
+    with runtime.db.session() as session:
+        assert session.get(Job, job_id).error == (None if failure == "stale_lease" else "agent_invalid_result")
+
+
+def test_dense_review_payload_fits_the_host_limit(open_math_item):
+    import httpx
+
+    from edu_app.jobs import _review_batches
+    from edu_app.reports import ReportItem
+    from edu_domain.agent_protocol import MAX_AGENT_METADATA_BYTES
+    from edu_domain.contracts import MAX_ITEMS_PER_PAGE, MAX_PAGE_BYTES, AnalyzePage
+    from edu_domain.grading import grade_item
+
+    source = open_math_item.source.model_copy(update={"steps": ["算" * 2000] * 12})
+    pending = open_math_item.model_copy(update={"source": source, "assessment": None, "review_timed_out": True})
+    items = [
+        ReportItem(id=str(i), page=1, analysis=pending, **ReportItem.from_grade(grade_item(pending)))
+        for i in range(MAX_ITEMS_PER_PAGE)
+    ]
+    batches = list(_review_batches(items))
+    assert len(batches) > 1 and [item for batch in batches for item in batch] == items
+    image = "a" * (((MAX_PAGE_BYTES + 2) // 3) * 4)
+    for batch in batches:
+        payload = AnalyzePage(
+            version="2", operation="analyze_submission", image_base64=image,
+            review_items=[item.analysis.source for item in batch],
+        )
+        request = httpx.Request("POST", "http://127.0.0.1/invocations", json=payload.model_dump(mode="json"))
+        assert len(request.content) <= len(image) + MAX_AGENT_METADATA_BYTES
 
 
 def test_outbox_send_failure_rolls_back_delivery_and_success_is_not_dispatched_twice(client, runtime):

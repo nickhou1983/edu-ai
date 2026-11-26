@@ -1,5 +1,7 @@
 import { devices, expect, test } from "@playwright/test";
 
+import type { SubmissionDetail } from "../src/api";
+
 test("checks homework, traces mastery evidence and reflects independent practice", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -68,6 +70,72 @@ test("checks homework, traces mastery evidence and reflects independent practice
   await expect(page.getByRole("alert")).toHaveText("没有找到这条记录。重试");
   await expect(photo).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+test("retries pending reviews without hiding the report or uploading again", async ({ page }) => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  let detail: SubmissionDetail = {
+    id, jobId: id, createdAt: Date.now(), pages: [1], revision: 0, canRetry: true,
+    status: "failed", error: "分析超时。原图仍在，无需重新上传。", report: null,
+  };
+  let retries = 0;
+  await page.route(`**/api/submissions/${id}`, (route) => route.fulfill({ json: detail }));
+  await page.route(`**/api/submissions/${id}/retry`, (route) => {
+    expect(route.request().method()).toBe("POST");
+    retries += 1;
+    detail = { ...detail, status: "queued", canRetry: false };
+    return route.fulfill({ json: detail, status: 202 });
+  });
+  await page.route(`**/api/submissions/${id}/pages/1`, (route) => route.fulfill({
+    contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>',
+  }));
+  await page.goto(`/?view=report&id=${id}`);
+  await expect(page.getByRole("alert")).toContainText("分析超时");
+  await expect(page.getByRole("button", { name: "重新分析" })).toBeVisible();
+
+  detail = {
+    ...detail, status: "done", error: null, canRetry: true, revision: 1,
+    report: {
+      items: [{
+        id: `${id}-item`, page: 1, label: "1", region: { left: 0, top: 0, right: 1000, bottom: 1000 },
+        stem: "合成复合题", choices: [], answer: "2", corrected: false, expected: null, skill: null,
+        outcome: "undetermined", feedback: "暂不判分", canCorrect: false, reason: "review_timeout",
+        verification: "unresolved", eligibleForMastery: false,
+      }],
+      counts: { correct: 0, partial: 0, incorrect: 0, blank: 0, undetermined: 1 },
+      retakePages: [],
+    },
+  };
+  await page.reload();
+  await expect(page.getByRole("status").filter({ hasText: "因独立解题或复核超时标为待复核" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /合成复合题 待复核/ })).toBeVisible();
+  await expect(page.getByText("第 1 题 · 待复核")).toBeVisible();
+  await expect(page.getByText(/请重拍后重新上传/)).toHaveCount(0);
+  const retry = page.getByRole("button", { name: "重试待复核" });
+  await retry.click();
+  await expect(page.getByText("正在排队")).toBeVisible();
+  await expect(retry).toHaveCount(0);
+  await expect(page.getByText("第 1 题 · 待复核")).toBeVisible();
+  await expect(page.getByRole("img", { name: "作业第 1 页原图" })).toBeVisible();
+
+  detail = { ...detail, status: "running" };
+  await expect(page.getByText("正在复核超时的题目")).toBeVisible();
+  const report = detail.report!;
+  detail = {
+    ...detail, status: "done", revision: 2,
+    report: {
+      ...report,
+      items: [{
+        ...report.items[0], reason: null, verification: "ai_review", outcome: "correct",
+        expected: "2", feedback: "复核完成",
+      }],
+      counts: { ...report.counts, correct: 1, undetermined: 0 },
+    },
+  };
+  await expect(page.getByText("第 1 题 · 正确")).toBeVisible();
+  await expect(page.getByText("正在复核超时的题目")).toHaveCount(0);
+  await expect(retry).toHaveCount(0);
+  expect(retries).toBe(1);
 });
 
 test.describe("phone layout", () => {

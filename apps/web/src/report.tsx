@@ -10,12 +10,17 @@ const reasonNames: Record<string, string> = {
   ambiguous_image: "题图不完整或识别有歧义", incomplete_question: "缺少完整题目",
   source_mismatch: "转写与原图不一致", model_disagreement: "独立解题结论冲突",
   missing_information: "题目缺少条件或存在歧义", missing_review: "独立复核结果不完整",
+  review_timeout: "独立解题或复核超时",
   answer_unclear: "作答无法可靠识别", mark_mismatch: "留白标记与作答矛盾",
   tool_failure: "计算工具未完成核验", tool_limit: "计算资源预算不足",
   invalid_tool_evidence: "计算证据无法复现", invalid_review: "复核题号不一致",
   invalid_partial: "部分正确缺少步骤依据", review_disagreement: "判分与等价性检查冲突",
   review_inconclusive: "复核尚无可靠结论", verification_failed: "未获得可靠核验结果",
 };
+
+function gradeLabel(item: GradedItem) {
+  return item.reason === "review_timeout" ? "待复核" : outcomeNames[item.outcome];
+}
 
 function OriginalPage({ api, id, page, item }: { api: Api; id: string; page: number; item?: GradedItem }) {
   const [src, setSrc] = useState("");
@@ -91,9 +96,12 @@ export function ReportView({ api, id, initialItem, back, practice }: {
   const [pageOverride, setPageOverride] = useState<number | null>(null);
   const [filter, setFilter] = useState<Outcome | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [queuedFrom, setQueuedFrom] = useState<SubmissionDetail | null>(null);
   const [retryError, setRetryError] = useState("");
   const data = report.data;
+  const retryBusy = retrying || (data !== null && queuedFrom === data);
   const rows: Report["items"] = data?.report?.items ?? [];
+  const pendingReviews = rows.filter((row) => row.reason === "review_timeout").length;
   const visibleRows = filter ? rows.filter((row) => row.outcome === filter) : rows;
   const item = visibleRows.find((row) => row.id === selected) ?? (pageOverride ? undefined : visibleRows[0]);
   const page = pageOverride ?? item?.page ?? data?.pages[0];
@@ -103,6 +111,7 @@ export function ReportView({ api, id, initialItem, back, practice }: {
     setRetryError("");
     try {
       await api.json(`/submissions/${id}/retry`, { method: "POST" });
+      setQueuedFrom(data);
       report.reload();
     } catch (reason) {
       setRetryError(describeError(reason));
@@ -120,14 +129,14 @@ export function ReportView({ api, id, initialItem, back, practice }: {
     </div>
     {report.error && <Problem retry={report.reload}>{report.error}</Problem>}
     {!data && !report.error && <p role="status">正在读取作业…</p>}
-    {data && pending(data) && <Progress record={data} type="report" />}
+    {data && pending(data) && <Progress record={data} type={data.report ? "review" : "report"} />}
     {data?.status === "failed" && <>
       <Problem>{data.error ?? "未完成分析，请重新上传或稍后重试。"}</Problem>
-      {data.canRetry && <button className="button secondary end-link" onClick={() => void retry()} disabled={retrying}>
+      {data.canRetry && <button className="button secondary end-link" onClick={() => void retry()} disabled={retryBusy}>
         重新分析
       </button>}
-      {retryError && <Problem>{retryError}</Problem>}
     </>}
+    {retryError && <Problem>{retryError}</Problem>}
     {data?.report && <>
       <div className="grade-summary" aria-label="按批改结果筛选">
         {(Object.keys(outcomeNames) as Outcome[]).map((outcome) => <button key={outcome}
@@ -142,6 +151,12 @@ export function ReportView({ api, id, initialItem, back, practice }: {
       </div>
       {data.report.retakePages.length > 0 && <div className="notice advisory" role="status">
         第 {data.report.retakePages.join("、")} 页看不清或未识别到完整题目，未判分。请重拍后重新上传。
+      </div>}
+      {pendingReviews > 0 && <div className="notice advisory">
+        <span role="status">{pendingReviews} 道题因独立解题或复核超时标为待复核，未判分；已核验的题目不受影响。</span>
+        {data.canRetry && <button className="button secondary" onClick={() => void retry()} disabled={retryBusy}>
+          重试待复核
+        </button>}
       </div>}
       <div className="report-grid">
         <section className="panel original" aria-labelledby="original-title">
@@ -164,12 +179,12 @@ export function ReportView({ api, id, initialItem, back, practice }: {
                 onClick={() => { setSelected(row.id); setPageOverride(null); }}>
                 <span className="item-index">{row.label}</span>
                 <span className="item-stem">{row.stem || `第 ${row.label} 题`}</span>
-                <span className={`pill ${row.outcome}`}>{outcomeNames[row.outcome]}</span>
+                <span className={`pill ${row.outcome}`}>{gradeLabel(row)}</span>
               </button>
             </li>)}
           </ul>
           {item && <div className="detail-sheet">
-            <strong>第 {item.label} 题 · {outcomeNames[item.outcome]}</strong>
+            <strong>第 {item.label} 题 · {gradeLabel(item)}</strong>
             <p className="small muted">
               {item.verification === "ai_review" ? "AI 独立解题与复核"
                 : item.verification === "unresolved" ? "尚未完成可靠核验" : "确定性规则核验"}

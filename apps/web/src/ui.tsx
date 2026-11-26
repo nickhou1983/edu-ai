@@ -40,10 +40,11 @@ export function Empty({ title, children }: { title: string; children: ReactNode 
   </div>;
 }
 
-export function Progress({ record, type }: { record: JobRecord; type: "report" | "practice" }) {
+export function Progress({ record, type }: { record: JobRecord; type: "report" | "practice" | "review" }) {
+  const working = { report: "正在识别并核验题目", practice: "正在生成并核验练习", review: "正在复核超时的题目" };
   return <div className="notice progress" role="status">
     <span className="working-dot" aria-hidden="true" />
-    <div><strong>{record.status === "queued" ? "正在排队" : type === "report" ? "正在识别并核验题目" : "正在生成并核验练习"}</strong>
+    <div><strong>{record.status === "queued" ? "正在排队" : working[type]}</strong>
       <p>可以先离开这个页面，稍后从记录中继续查看。</p></div>
   </div>;
 }

@@ -9,6 +9,8 @@ param imageDigest string
 
 param agentUrl string
 
+param mathReviewRetryEnabled bool = true
+
 @minLength(36)
 @maxLength(36)
 param apiClientId string
@@ -128,7 +130,9 @@ resource api 'Microsoft.App/containerApps@2025-07-01' = if (contains(['api', 'se
           name: 'api'
           image: image
           command: ['python', '-m', 'edu_app', 'serve']
-          env: workloadEnv(commonEnv, names[0], dbEndpoint, identities[0].properties.clientId)
+          env: concat(workloadEnv(commonEnv, names[0], dbEndpoint, identities[0].properties.clientId), [
+            { name: 'EDU_MATH_REVIEW_RETRY_ENABLED', value: string(mathReviewRetryEnabled) }
+          ])
           resources: resources
           probes: [
             {

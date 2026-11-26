@@ -23,7 +23,7 @@ from edu_app.english_api import english_router
 from edu_app.jobs import JOB_ERRORS, RETRYABLE_FAILURES
 from edu_app.mastery import overview
 from edu_app.queue import dispatch_loop
-from edu_app.reports import ReportItem, public_report, save_report
+from edu_app.reports import ReportItem, is_pending_review, public_report, save_report
 from edu_app.runtime import Runtime
 from edu_domain.contracts import (
     MAX_PAGES,
@@ -89,17 +89,38 @@ def _job_info(job: Job) -> dict:
     }
 
 
-def _can_retry(job: Job) -> bool:
-    return job.status == "failed" and job.error in RETRYABLE_FAILURES and job.manual_retries == 0
+def _can_retry(submission: Submission, job: Job, report: Report | None) -> bool:
+    if job.manual_retries:
+        return False
+    if not submission.revision:
+        return job.status == "failed" and job.error in RETRYABLE_FAILURES
+    return job.status == "done" and report is not None and any(
+        is_pending_review(item) for item in report.document["items"]
+    )
 
 
-def _submission_info(submission: Submission, job: Job) -> dict:
+def _submission_info(submission: Submission, job: Job, report: Report | None = None) -> dict:
+    info = _job_info(job)
+    if job.status == "failed":
+        if submission.revision:
+            if job.error == "agent_timeout":
+                info["error"] = "复核超时，已保留现有报告。"
+            else:
+                reason = {
+                    "agent_no_result": "复核服务没有返回可用结果。",
+                    "agent_invalid_result": "复核结果不完整或无法核对。",
+                    "agent_rate_limited": "复核服务请求过多。",
+                    "agent_unavailable": "复核服务暂时不可用。",
+                }.get(job.error, info["error"])
+                info["error"] = f"复核未完成，已保留现有报告。{reason}"
+        elif job.error == "agent_timeout":
+            info["error"] = "分析超时。原图仍在，无需重新上传。"
     return {
         "id": submission.id,
         "createdAt": submission.created_at,
         "revision": submission.revision,
-        "canRetry": _can_retry(job),
-        **_job_info(job),
+        "canRetry": _can_retry(submission, job, report),
+        **info,
     }
 
 
@@ -328,7 +349,7 @@ def build_app(runtime: Runtime) -> FastAPI:
                 session.get(Report, (submission.id, submission.revision)) if submission.revision else None
             )
             return {
-                **_submission_info(submission, job),
+                **_submission_info(submission, job, report if runtime.settings.math_review_retry_enabled else None),
                 "pages": pages,
                 "report": public_report(report.document) if report else None,
             }
@@ -352,8 +373,13 @@ def build_app(runtime: Runtime) -> FastAPI:
             job = session.scalars(
                 select(Job).where(Job.submission_id == submission.id).with_for_update()
             ).one()
-            if not _can_retry(job):
-                raise HTTPException(409, "此作业不能再次分析，请检查原图或重新上传。")
+            session.refresh(submission, with_for_update=True)
+            report = (
+                session.get_one(Report, (submission.id, submission.revision))
+                if submission.revision and runtime.settings.math_review_retry_enabled else None
+            )
+            if not _can_retry(submission, job, report):
+                raise HTTPException(409, "此作业当前无法重试，请刷新查看最新状态。")
             job.status, job.error, job.attempts = "queued", None, 0
             job.available_at, job.dispatched_at = now_ms(), None
             job.manual_retries += 1

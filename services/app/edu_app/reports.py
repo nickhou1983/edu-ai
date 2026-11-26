@@ -107,17 +107,22 @@ def make_report(
     return {
         "items": items,
         "retake_pages": retake,
-        "versions": [
-            {
-                "page": number,
-                **result.provenance.model_dump(),
-                "schema": result.version,
-                "rules": RULES_VERSION,
-                "open_rules": OPEN_RULES_VERSION,
-            }
-            for number, result in pages
-        ],
+        "versions": [page_version(number, result) for number, result in pages],
     }
+
+
+def page_version(number: int, result: AnalysisResult) -> dict:
+    return {
+        "page": number,
+        **result.provenance.model_dump(),
+        "schema": result.version,
+        "rules": RULES_VERSION,
+        "open_rules": OPEN_RULES_VERSION,
+    }
+
+
+def is_pending_review(value: dict) -> bool:
+    return value.get("reason") == "review_timeout" and value.get("correction") is None
 
 
 def save_report(session: Session, submission: Submission, document: dict) -> None:

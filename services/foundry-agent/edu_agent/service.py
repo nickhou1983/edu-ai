@@ -1,10 +1,12 @@
+import asyncio
 import json
 from base64 import b64decode
 from binascii import Error as Base64Error
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from edu_domain.agent_protocol import MODEL_TIMEOUT_CODES
 from edu_domain.contracts import (
     MAX_PAGE_BYTES,
     AgentRequest,
@@ -24,6 +26,7 @@ from edu_domain.grading import grade_item
 from edu_domain.math import MathError, matches_printed_target, verify
 
 PROMPT_VERSION = "math-feedback-v2"
+DEFAULT_PAGE_TIMEOUT_SECONDS = 420
 _SCHEMA_ANNOTATIONS = {
     "title",
     "description",
@@ -111,10 +114,11 @@ def image_url(encoded: str) -> str:
 
 
 class ModelError(RuntimeError):
-    def __init__(self, code: str, *, retryable: bool):
+    def __init__(self, code: str, *, retryable: bool, retry_after: int | None = None):
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.retry_after = retry_after
 
 
 class Model(Protocol):
@@ -145,9 +149,10 @@ def model_schema(schema: type[BaseModel]) -> dict:
 
 
 class MathAgent:
-    def __init__(self, model: Model, version: str):
+    def __init__(self, model: Model, version: str, *, page_timeout: float = DEFAULT_PAGE_TIMEOUT_SECONDS):
         self.model = model
         self.version = version
+        self.page_timeout = page_timeout
 
     def _provenance(self, model: str) -> AgentVersion:
         return AgentVersion(model=model, prompt=PROMPT_VERSION, agent=self.version)
@@ -185,13 +190,73 @@ class MathAgent:
                 provenance=self._provenance(model),
             )
 
+        return await self._analyze(request)
+
+    async def _analyze(self, request: AnalyzePage) -> AnalysisResult:
+        image = image_url(request.image_base64)
+        deadline = asyncio.get_running_loop().time() + self.page_timeout if request.version == "2" else None
+        review_only = request.review_items is not None
+        if request.review_items is not None:
+            quality = "readable"
+            items = [AnalyzedItem(source=source, spec=None, candidate=None) for source in request.review_items]
+            open_items = dict(enumerate(request.review_items))
+            models_used = []
+        else:
+            try:
+                async with asyncio.timeout_at(deadline) as reading:
+                    quality, items, model = await self._read_and_solve(request, image)
+            except TimeoutError as exc:
+                if not reading.expired():
+                    raise
+                raise ModelError("model_page_deadline", retryable=True) from exc
+            models_used = [model]
+            open_items = {
+                index: item.source for index, item in enumerate(items)
+                if item.source.readable and item.source.question and grade_item(item).problem is None
+            }
+        if open_items:
+            from edu_agent.open_assessment import assess_open
+
+            timed_out = False
+            try:
+                async with asyncio.timeout_at(deadline) as review:
+                    assessments, models = await assess_open(self.model, open_items, image=image)
+            except TimeoutError as exc:
+                if not review.expired():
+                    raise
+                if review_only:
+                    raise ModelError("model_page_deadline", retryable=True) from exc
+                timed_out = True
+            except ModelError as exc:
+                if review_only or exc.code not in MODEL_TIMEOUT_CODES:
+                    raise
+                timed_out = True
+            else:
+                for index, assessment in assessments.items():
+                    items[index] = items[index].model_copy(update={"assessment": assessment})
+                models_used.extend(models)
+            if timed_out:
+                for index in open_items:
+                    items[index] = items[index].model_copy(update={"review_timed_out": True})
+
+        model = " / ".join(dict.fromkeys(models_used))
+        if request.version == "1" and len(model) > 128:
+            raise ModelError("model_invalid_result", retryable=True)
+        return AnalysisResult(
+            version=request.version, operation=request.operation, quality=quality, items=items,
+            provenance=self._provenance(model),
+        )
+
+    async def _read_and_solve(
+        self, request: AnalyzePage, image: str,
+    ) -> tuple[Literal["readable", "unclear"], list[AnalyzedItem], str]:
         read, read_model = await self.model.infer(
             ReadPage,
             _READ if request.version == "2" else _READ_V1,
             json.dumps({"request": "Transcribe this page.", "catalog": [
                 point.model_dump() for point in request.catalog
             ]}, ensure_ascii=False),
-            image=image_url(request.image_base64),
+            image=image,
         )
         if request.version == "2" and any(source.readable and source.question is None for source in read.items):
             raise ModelError("model_invalid_result", retryable=True)
@@ -206,13 +271,7 @@ class MathAgent:
                 source.model_copy(update={"question": None}) for source in read.items
             ]})
         if read.quality == "unclear" or not read.items:
-            return AnalysisResult(
-                version=request.version,
-                operation=request.operation,
-                quality="unclear",
-                items=[],
-                provenance=self._provenance(read_model),
-            )
+            return "unclear", [], read_model
         questions = [
             {
                 "index": index,
@@ -258,28 +317,7 @@ class MathAgent:
             for point in source.question.points
         ):
             raise ModelError("model_invalid_result", retryable=True)
-        open_items = {
-            index: item.source for index, item in enumerate(items)
-            if item.source.readable and item.source.question and grade_item(item).problem is None
-        }
-        if open_items:
-            from edu_agent.open_assessment import assess_open
-
-            assessments, models = await assess_open(
-                self.model, open_items, image=image_url(request.image_base64)
-            )
-            for index, assessment in assessments.items():
-                items[index] = items[index].model_copy(update={"assessment": assessment})
-            model = " / ".join(dict.fromkeys([model, *models]))
-        if request.version == "1" and len(model) > 128:
-            raise ModelError("model_invalid_result", retryable=True)
-        return AnalysisResult(
-            version=request.version,
-            operation=request.operation,
-            quality=read.quality,
-            items=items,
-            provenance=self._provenance(model),
-        )
+        return read.quality, items, model
 
 
 def _legacy_source(source) -> bool:

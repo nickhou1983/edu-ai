@@ -154,6 +154,8 @@ def _verify_item(item: AnalyzedItem) -> Verified:
 
 
 def grade_item(item: AnalyzedItem, *, correction: str | None = None) -> Grade:
+    if item.review_timed_out:
+        return _failed("review_timeout", "本次独立解题或复核超时，暂不判分，也不计入掌握度。")
     if item.assessment is not None:
         try:
             return _grade_open(item, correction)

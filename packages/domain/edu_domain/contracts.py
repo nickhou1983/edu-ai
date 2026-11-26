@@ -84,6 +84,7 @@ class AnalyzedItem(Contract):
     spec: ProblemSpec | None
     candidate: AnswerText | None
     assessment: "OpenAssessment | None" = None
+    review_timed_out: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class AnalyzePage(Contract):
@@ -91,6 +92,17 @@ class AnalyzePage(Contract):
     operation: Literal["analyze_submission"]
     image_base64: Annotated[str, Field(min_length=4, max_length=((MAX_PAGE_BYTES + 2) // 3) * 4)]
     catalog: "Annotated[list[KnowledgeDescriptor], Field(max_length=250)]" = Field(default_factory=list)
+    review_items: Annotated[list[ReadItem], Field(min_length=1, max_length=MAX_ITEMS_PER_PAGE)] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def check_review_items(self):
+        if self.review_items is not None and (
+            self.version != "2" or any(not item.readable or item.question is None for item in self.review_items)
+        ):
+            raise ValueError("An open review retry requires v2 and complete, readable questions")
+        return self
 
 
 class GeneratePractice(Contract):

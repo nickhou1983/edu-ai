@@ -142,7 +142,7 @@ class DemoAgent:
             return english_demo(request)
         if isinstance(request, GeneratePractice):
             return demo_practice(request)
-        if request.image_base64 != _encoded_sample():
+        if request.review_items is not None or request.image_base64 != _encoded_sample():
             raise DemoImageOnly
         return demo_analysis()
 

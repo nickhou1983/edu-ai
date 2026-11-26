@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     database_url: str | None = None
     agent_url: str | None = None
     agent_timeout_seconds: int = Field(default=600, ge=10, le=850)
+    math_review_retry_enabled: bool = True
     managed_identity_client_id: UUID | None = None
     blob_account_url: str | None = None
     blob_container: str | None = None

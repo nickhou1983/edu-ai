@@ -1,6 +1,10 @@
 import asyncio
 import json
 
+from pydantic import BaseModel
+
+from edu_agent.service import Model, ModelError
+from edu_domain.agent_protocol import MODEL_TIMEOUT_CODES
 from edu_domain.contracts import (
     OpenAssessment,
     OpenReviews,
@@ -60,16 +64,36 @@ def _unique(entries, indexes):
     return {index: entry for index, entry in result.items() if index not in duplicates}
 
 
+async def _infer_open[T: BaseModel](
+    model: Model, schema: type[T], instructions: str, text: str, *, image: str | None = None,
+) -> tuple[T, str]:
+    image_arg = {"image": image} if image is not None else {}
+    try:
+        return await model.infer(schema, instructions, text, **image_arg)
+    except ModelError as exc:
+        if exc.code not in MODEL_TIMEOUT_CODES:
+            raise
+    await asyncio.sleep(2)
+    return await model.infer(schema, instructions, text, **image_arg)
+
+
 async def assess_open(model, items, *, image: str):
     questions = [
         {"index": index, "question": source.question.model_dump(), "choices": source.choices}
         for index, source in items.items()
     ]
     text = json.dumps(questions, ensure_ascii=False)
-    (first, first_model), (second, second_model) = await asyncio.gather(
-        model.infer(OpenSolutions, _SOLVE, text),
-        model.infer(OpenSolutions, _SECOND, text),
+    solvers = (
+        asyncio.create_task(_infer_open(model, OpenSolutions, _SOLVE, text)),
+        asyncio.create_task(_infer_open(model, OpenSolutions, _SECOND, text)),
     )
+    try:
+        (first, first_model), (second, second_model) = await asyncio.gather(*solvers)
+    finally:
+        for solver in solvers:
+            if not solver.done():
+                solver.cancel()
+        await asyncio.gather(*solvers, return_exceptions=True)
     first = _unique(first.solutions, items)
     second = _unique(second.solutions, items)
     tools = {}
@@ -92,8 +116,8 @@ async def assess_open(model, items, *, image: str):
     ]
     if not review_input:
         return {}, [first_model, second_model]
-    reviewed, review_model = await model.infer(
-        OpenReviews, _REVIEW, json.dumps(review_input, ensure_ascii=False), image=image,
+    reviewed, review_model = await _infer_open(
+        model, OpenReviews, _REVIEW, json.dumps(review_input, ensure_ascii=False), image=image,
     )
     reviews = _unique(reviewed.reviews, tools)
     result = {
