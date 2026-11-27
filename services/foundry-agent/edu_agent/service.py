@@ -28,7 +28,7 @@ from edu_domain.grading import grade_item
 from edu_domain.math import MathError, matches_printed_target, verify
 
 PROMPT_VERSION = "math-feedback-v2"
-AI_MASTERY_PROMPT_VERSION = "math-ai-mastery-v1"
+AI_MASTERY_PROMPT_VERSION = "math-ai-mastery-v2"
 DEFAULT_PAGE_TIMEOUT_SECONDS = 420
 _SCHEMA_ANNOTATIONS = {
     "title",
@@ -227,8 +227,8 @@ class MathAgent:
                 try:
                     async with asyncio.timeout_at(deadline) as review:
                         assessments, models = await assess_open(
-                            self.model, {index: open_items[index] for index in indexes}, image=image,
-                            include_mastery=request.ai_only,
+                            self.model, {index: open_items[index] for index in indexes},
+                            image=image, ai_only=request.ai_only,
                         )
                 except TimeoutError as exc:
                     if not review.expired():

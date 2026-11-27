@@ -157,18 +157,19 @@ def test_open_assessment_grades_substitution_without_claiming_deterministic_mast
     assert grade_item(open_math_item, correction="2").score is None
 
 
+@pytest.mark.parametrize("ai_only", [False, True])
 @pytest.mark.parametrize(("change", "reason"), [
     ({"source_consistent": False}, "source_mismatch"),
     ({"references_agree": False}, "model_disagreement"),
     ({"unambiguous": False}, "missing_information"),
     ({"outcome": "partial", "steps": []}, "invalid_partial"),
 ])
-def test_open_assessment_keeps_ambiguity_and_disagreement_ungraded(open_math_item, change, reason):
+def test_open_assessment_keeps_ambiguity_and_disagreement_ungraded(open_math_item, change, reason, ai_only):
     assessment = open_math_item.assessment
     item = open_math_item.model_copy(update={
         "assessment": assessment.model_copy(update={"review": assessment.review.model_copy(update=change)})
     })
-    grade = grade_item(item)
+    grade = grade_item(item, ai_only=ai_only)
     assert (grade.outcome, grade.score, grade.reason) == ("undetermined", None, reason)
 
 
@@ -241,6 +242,43 @@ def test_failed_calculation_prevents_ai_grading_even_when_review_agrees(open_mat
     })})
     grade = grade_item(item)
     assert (grade.outcome, grade.score, grade.reason) == ("undetermined", None, "tool_failure")
+
+
+def test_pure_ai_grades_polynomial_independence_without_checking_calculation(open_math_item, monkeypatch):
+    from edu_domain import grading
+    from edu_domain.contracts import Calculation, CalculationResult
+
+    source = open_math_item.source
+    question = source.question.model_copy(update={
+        "text": "已知 A=ab-a，B=ab+2a+b。若 6A-3B 的值与 b 无关，求 a。",
+        "conditions": ["A=ab-a", "B=ab+2a+b", "6A-3B 的值与 b 无关"],
+        "goal": "求 a", "parts": [], "points": [],
+    })
+    assessment = open_math_item.assessment
+    solution = assessment.first.model_copy(update={
+        "answer": "1", "explanation": "6A-3B=(3a-3)b-12a，令 3a-3=0 得 a=1。",
+        "calculation": Calculation(
+            operation="simplify", expression="6*(ab-a)-3*(ab+2*a+b)",
+            variables=["a", "b"], bindings=[], comparison=None,
+        ),
+        "calculation_role": "intermediate",
+    })
+    item = open_math_item.model_copy(update={
+        "source": source.model_copy(update={
+            "label": "17(2)", "stem": question.text, "question": question, "answer": "1", "steps": ["3a-3=0"],
+        }),
+        "assessment": assessment.model_copy(update={
+            "first": solution, "second": solution.model_copy(update={
+                "explanation": "固定 a，让 b 增加 1，6A-3B 增加 6a-3(a+1)=3a-3；增量必须为零。",
+            }),
+            "review": assessment.review.model_copy(update={"outcome": "correct", "feedback": "正确消去 b 项。"}),
+            "first_tool": CalculationResult(status="invalid", value=None, reason="undeclared_symbol"),
+            "second_tool": None,
+        }),
+    })
+    monkeypatch.setattr(grading, "calculate", Mock(side_effect=AssertionError("unexpected tool call")))
+    grade = grading.grade_item(item, ai_only=True)
+    assert (grade.outcome, grade.score, grade.reference, grade.tool_checked) == ("correct", 2, "1", False)
 
 
 def test_failed_answer_comparison_is_not_silently_treated_as_semantic_agreement(monkeypatch, open_math_item):

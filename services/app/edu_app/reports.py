@@ -95,7 +95,8 @@ class ReportItem(Contract):
 
 
 def make_report(
-    submission_id: str, pages: list[tuple[int, AnalysisResult]], *, before_item: Callable[[], None] | None = None,
+    submission_id: str, pages: list[tuple[int, AnalysisResult]], *,
+    ai_only: bool, before_item: Callable[[], None] | None = None,
 ) -> dict:
     items = []
     retake = []
@@ -111,7 +112,7 @@ def make_report(
                     id=str(uuid5(UUID(submission_id), f"{number}:{index}")),
                     page=number,
                     analysis=item,
-                    **ReportItem.from_grade(grade_item(item)),
+                    **ReportItem.from_grade(grade_item(item, ai_only=ai_only)),
                 ).model_dump()
             )
     return {

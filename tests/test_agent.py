@@ -280,29 +280,48 @@ def test_english_v2_host_uses_blind_references_and_preserves_a_completed_batch(h
     assert all(call.kwargs["timeout"] == 90 for call in options.call_args_list)
 
 
-def test_open_agent_blind_solvers_never_receive_student_answers(open_math_item):
+@pytest.mark.parametrize(("ai_only", "retry"), [(False, False), (True, False), (True, True)])
+def test_open_agent_blind_solvers_never_receive_student_answers(open_math_item, monkeypatch, ai_only, retry):
+    from edu_agent import open_assessment
     from edu_domain.contracts import OpenReviews, OpenSolutions
     from edu_domain.grading import grade_item
 
+    if ai_only:
+        monkeypatch.setattr(open_assessment, "calculate", Mock(side_effect=AssertionError("unexpected tool call")))
     source = open_math_item.source.model_copy(update={"answer": "student_private_987654"})
     assessment = open_math_item.assessment
+    reading = [] if retry else [(ReadPage(quality="readable", items=[source]), "test-model")]
     model = SimpleNamespace(infer=AsyncMock(side_effect=[
-        (ReadPage(quality="readable", items=[source]), "test-model"),
+        *reading,
         (OpenSolutions(solutions=[assessment.first]), "test-model"),
         (OpenSolutions(solutions=[assessment.second]), "test-model"),
         (OpenReviews(reviews=[assessment.review]), "test-model"),
     ]))
-    result = asyncio.run(MathAgent(model, "agent-test").invoke(_photo_request().model_copy(update={"version": "2"})))
-    assert grade_item(result.items[0]).reference == "2"
-    assert result.version == "2"
+    request = _photo_request().model_copy(
+        update={"version": "2", "ai_only": ai_only, "review_items": [source] if retry else None},
+    )
+    result = asyncio.run(MathAgent(model, "agent-test").invoke(request))
+    grade = grade_item(result.items[0], ai_only=ai_only)
+    assert (grade.reference, grade.tool_checked) == ("2", not ai_only)
     calls = model.infer.await_args_list
-    assert len(calls) == 4
-    for call in calls[1:3]:
+    assert len(calls) == (3 if retry else 4)
+    *solve_calls, review_call = calls[-3:]
+    for call in solve_calls:
         assert "student_private_987654" not in call.args[2]
         assert not call.kwargs
         assert json.loads(call.args[2])[0]["question"]["conditions"] == ["a=-1", "b=1/3"]
-    assert "student_private_987654" in calls[3].args[2]
-    assert calls[3].kwargs["image"].startswith("data:image/jpeg;base64,")
+        assert ("calculate_math" in call.args[1]) is not ai_only
+    assert "student_private_987654" in review_call.args[2]
+    assert review_call.kwargs["image"].startswith("data:image/jpeg;base64,")
+    review_input = json.loads(review_call.args[2])[0]
+    returned = result.items[0].assessment
+    if ai_only:
+        assert all(field not in review_input for field in ("first_tool", "second_tool"))
+        assert all("calculation" not in review_input[side] for side in ("first", "second"))
+        assert returned.first.calculation is returned.second.calculation is None
+        assert returned.first_tool is returned.second_tool is None
+    else:
+        assert review_input["first_tool"]["value"] == "2"
 
 
 def test_ai_only_host_grades_basic_items_and_keeps_completed_batches_on_timeout(hosted_model, open_math_item):
@@ -345,11 +364,11 @@ def test_ai_only_host_grades_basic_items_and_keeps_completed_batches_on_timeout(
         response = client.post("/invocations", json={**request, "version": "2", "ai_only": True})
     assert response.status_code == 200
     result = AnalysisResult.model_validate_json(response.content)
-    assert result.provenance.prompt == "math-ai-mastery-v1"
+    assert result.provenance.prompt == "math-ai-mastery-v2"
     assert all(item.spec is None and item.candidate is None for item in result.items)
-    assert [grade_item(item).outcome for item in result.items[:-1]] == ["correct"] * MAX_AI_REVIEW_BATCH
+    assert [grade_item(item, ai_only=True).outcome for item in result.items[:-1]] == ["correct"] * MAX_AI_REVIEW_BATCH
     assert [item.assessment.review.mastery_point_index for item in result.items[:-1]] == [0] * MAX_AI_REVIEW_BATCH
-    assert grade_item(result.items[-1]).reason == "review_timeout"
+    assert grade_item(result.items[-1], ai_only=True).reason == "review_timeout"
 
 
 def test_open_agent_drops_duplicate_solver_results(open_math_item):

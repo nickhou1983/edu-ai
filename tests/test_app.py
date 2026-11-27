@@ -64,9 +64,13 @@ def test_open_grading_persists_reference_and_knowledge_without_mastery(client, r
         assert stored["analysis"]["assessment"]["first_tool"]["value"] == "2"
 
 
-def test_ai_mastery_counts_primary_evidence_once_after_retry_and_reupload(client, runtime, open_math_item):
+def test_ai_mastery_counts_primary_evidence_once_after_retry_and_reupload(
+    client, runtime, open_math_item, monkeypatch,
+):
+    from edu_domain import grading
     from edu_domain.contracts import KnowledgeCandidate
 
+    monkeypatch.setattr(grading, "calculate", Mock(side_effect=AssertionError("unexpected tool call")))
     runtime.settings.math_ai_mastery_enabled = True
     submission = _upload(client, demo_page())
     path = f"/api/submissions/{submission['id']}"
@@ -122,6 +126,7 @@ def test_ai_mastery_counts_primary_evidence_once_after_retry_and_reupload(client
     before = client.get(path).json()
     rows = before["report"]["items"]
     assert [row["eligibleForMastery"] for row in rows] == [True, True, True, False, False, False, False, False]
+    assert not any(row["toolChecked"] for row in rows)
     point_id = rows[0]["masteryPointId"]
     assert point_id == rows[0]["knowledgeIds"][1]
     stats = _skill(client, point_id)
@@ -141,7 +146,9 @@ def test_ai_mastery_counts_primary_evidence_once_after_retry_and_reupload(client
     after = client.get(path).json()
     assert after["report"]["items"][:6] == rows[:6]
     assert after["report"]["items"][6]["id"] == rows[6]["id"]
-    assert after["report"]["items"][6]["eligibleForMastery"]
+    retried = after["report"]["items"][6]
+    assert (retried["outcome"], retried["expected"], retried["toolChecked"]) == ("correct", "7", False)
+    assert retried["eligibleForMastery"]
     assert _skill(client, point_id)["sampleCount"] == 4
     assert client.post(f"{path}/retry").status_code == 409
     runtime.settings.math_ai_mastery_enabled = True

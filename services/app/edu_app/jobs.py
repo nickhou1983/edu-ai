@@ -164,7 +164,7 @@ def _analyze(runtime: Runtime, agent: Agent, work: Work) -> dict:
             page.analysis_checkpoint = result.model_dump(mode="json")
             job.lease_until = now_ms() + LEASE_MS
         results.append((number, result))
-    return make_report(submission_id, results, before_item=lambda: _renew(runtime, work))
+    return make_report(submission_id, results, ai_only=ai_only, before_item=lambda: _renew(runtime, work))
 
 
 def _valid_page(result: AnalysisResult, known: set[str], *, ai_only: bool) -> bool:
@@ -241,7 +241,8 @@ def _review_batch(
         _renew(runtime, work)
         analysis = AnalyzedItem(source=target.analysis.source, spec=None, candidate=None, assessment=assessment)
         replacements[target.id] = ReportItem(
-            id=target.id, page=target.page, analysis=analysis, **ReportItem.from_grade(grade_item(analysis)),
+            id=target.id, page=target.page, analysis=analysis,
+            **ReportItem.from_grade(grade_item(analysis, ai_only=ai_only)),
         )
     return result, replacements
 

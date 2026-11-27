@@ -53,7 +53,7 @@ def _compare(first: str, second: str, variables: list[str]) -> bool | None:
     return result.value == "true"
 
 
-def _grade_open(item: AnalyzedItem, correction: str | None) -> Grade:
+def _grade_open(item: AnalyzedItem, correction: str | None, *, ai_only: bool) -> Grade:
     assessment = item.assessment
     if not item.source.readable or item.source.question is None or assessment is None:
         return _failed("incomplete_question", "没有完整、可靠的题目转写，暂不判分。请核对原图。")
@@ -71,33 +71,35 @@ def _grade_open(item: AnalyzedItem, correction: str | None) -> Grade:
         return _failed("missing_information", "题目存在歧义、缺少条件，或独立解题未得到完整结果。")
     if not review.references_agree:
         return _failed("model_disagreement", "两次独立解题结论不一致，暂不判分。")
-    variables = list(dict.fromkeys(
-        variable for solution in (assessment.first, assessment.second) if solution.calculation
-        for variable in solution.calculation.variables
-    ))
-    if len(variables) > 16:
-        return _failed("tool_limit", "解题所需计算超过本次资源预算，暂不判分。")
-    if _compare(assessment.first.answer, assessment.second.answer, variables) is False:
-        return _failed("model_disagreement", "独立解题的参考答案经计算比较不等价，暂不判分。")
     checked = False
-    for solution, recorded in (
-        (assessment.first, assessment.first_tool), (assessment.second, assessment.second_tool),
-    ):
-        if solution.calculation is None:
-            if recorded is not None:
-                return _failed("invalid_tool_evidence", "计算证据与解题请求不一致，暂不判分。")
-            continue
-        actual = calculate(solution.calculation)
-        if actual.status != "ok" or actual.value is None:
-            return _failed("tool_failure", "计算工具未能完成核验（格式、资源或运行问题），暂不判分。")
-        if recorded != actual:
-            return _failed("invalid_tool_evidence", "计算结果无法复现，暂不判分。")
-        checked = True
-        if not item.source.choices and solution.calculation_role == "answer" and (
-            solution.calculation.operation in ("evaluate", "simplify")
+    variables = []
+    if not ai_only:
+        variables = list(dict.fromkeys(
+            variable for solution in (assessment.first, assessment.second) if solution.calculation
+            for variable in solution.calculation.variables
+        ))
+        if len(variables) > 16:
+            return _failed("tool_limit", "解题所需计算超过本次资源预算，暂不判分。")
+        if _compare(assessment.first.answer, assessment.second.answer, variables) is False:
+            return _failed("model_disagreement", "独立解题的参考答案经计算比较不等价，暂不判分。")
+        for solution, recorded in (
+            (assessment.first, assessment.first_tool), (assessment.second, assessment.second_tool),
         ):
-            if _compare(solution.answer, actual.value, solution.calculation.variables) is False:
-                return _failed("model_disagreement", "参考答案与计算工具的结果不一致，暂不判分。")
+            if solution.calculation is None:
+                if recorded is not None:
+                    return _failed("invalid_tool_evidence", "计算证据与解题请求不一致，暂不判分。")
+                continue
+            actual = calculate(solution.calculation)
+            if actual.status != "ok" or actual.value is None:
+                return _failed("tool_failure", "计算工具未能完成核验（格式、资源或运行问题），暂不判分。")
+            if recorded != actual:
+                return _failed("invalid_tool_evidence", "计算结果无法复现，暂不判分。")
+            checked = True
+            if not item.source.choices and solution.calculation_role == "answer" and (
+                solution.calculation.operation in ("evaluate", "simplify")
+            ):
+                if _compare(solution.answer, actual.value, solution.calculation.variables) is False:
+                    return _failed("model_disagreement", "参考答案与计算工具的结果不一致，暂不判分。")
     source = item.source
     if source.mark == "blank":
         if source.answer or source.steps or review.outcome != "blank":
@@ -110,7 +112,7 @@ def _grade_open(item: AnalyzedItem, correction: str | None) -> Grade:
         return _failed("review_inconclusive", review.feedback)
     if review.outcome == "partial" and not review.steps:
         return _failed("invalid_partial", "部分正确的判定缺少具体步骤依据，暂不判分。")
-    if review.outcome in ("correct", "incorrect") and not source.choices:
+    if not ai_only and review.outcome in ("correct", "incorrect") and not source.choices:
         equivalent = _compare(source.answer, assessment.first.answer, variables)
         if (review.outcome == "correct" and equivalent is False) or (
             review.outcome == "incorrect" and equivalent is True
@@ -153,19 +155,21 @@ def _verify_item(item: AnalyzedItem) -> Verified:
     return problem
 
 
-def grade_item(item: AnalyzedItem, *, correction: str | None = None) -> Grade:
+def grade_item(item: AnalyzedItem, *, correction: str | None = None, ai_only: bool = False) -> Grade:
     if item.review_timed_out:
         return _failed("review_timeout", "本次独立解题或复核超时，暂不判分，也不计入掌握度。")
     if item.assessment is not None:
         try:
-            return _grade_open(item, correction)
+            return _grade_open(item, correction, ai_only=ai_only)
         except CalculationError:
             return _failed("tool_failure", "数学等价性检查未能完成，暂不判分。")
+    if not item.source.readable:
+        return _failed("ambiguous_image", "题目区域不完整或识别存在歧义，请核对原图。")
+    if ai_only:
+        return _failed("missing_review", "开放题型的独立解题或复核结果不完整，暂不判分。")
     try:
         problem = _verify_item(item)
     except MathError as exc:
-        if not item.source.readable:
-            return _failed("ambiguous_image", "题目区域不完整或识别存在歧义，请核对原图。")
         if item.source.question is not None:
             return _failed("missing_review", "开放题型的独立解题或复核结果不完整，暂不判分。")
         message = str(exc)
