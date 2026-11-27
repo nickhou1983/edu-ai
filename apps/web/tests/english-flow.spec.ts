@@ -17,11 +17,30 @@ test("English uploads, objective mastery and all text-only expression modules", 
   await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
   await expect(page.getByText("AI 文字建议 · 不计分")).toBeVisible();
   await expect(page.getByText("AI 参考：").first()).toBeVisible();
+  const reportUrl = page.url();
+  const reportPath = `/api/english/records/${new URL(reportUrl).searchParams.get("id")}`;
+  const original = await (await page.request.get(reportPath, { headers: { "X-Demo-Student": "demo-a" } })).json();
+  const reanalyzed = page.waitForResponse(async (response) => {
+    if (new URL(response.url()).pathname !== reportPath || !response.ok()) return false;
+    const record = await response.json();
+    return record.status === "done" && record.items[0]?.id !== original.items[0].id;
+  });
+  const queued = page.waitForResponse((response) => response.url().endsWith(`${reportPath}/reanalyze`));
+  await page.getByRole("button", { name: "重新分析整份作业", exact: true }).click();
+  await page.getByRole("button", { name: "开始重新分析" }).click();
+  const response = await queued;
+  expect(response.status()).toBe(202);
+  expect(await response.json()).toMatchObject({ id: original.id, jobId: original.jobId, isReanalyzing: true });
+  await reanalyzed;
+  await expect(page).toHaveURL(reportUrl);
+  await expect(page.getByRole("button", { name: "重新分析整份作业", exact: true })).toBeEnabled();
+  await expect(page.getByText("AI 文字建议 · 不计分")).toBeVisible();
   await page.getByRole("button", { name: "返回英语学习" }).click();
 
   await page.getByLabel("英语练习方向").selectOption("english-vocabulary");
   await page.getByRole("button", { name: "生成 4 道英语练习" }).click();
   await expect(page.getByRole("article")).toHaveCount(4);
+  await expect(page.getByRole("button", { name: "重新分析整份作业", exact: true })).toHaveCount(0);
   await expect(page.getByText("AI 参考：")).toHaveCount(0);
   const answers = ["apple", "book", "school", "friend"];
   for (let i = 0; i < answers.length; i++) {

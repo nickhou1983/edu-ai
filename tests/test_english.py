@@ -427,6 +427,94 @@ def test_english_ai_worksheet_resumes_completed_pages_and_retries_only_pending_i
         assert {e.verification for e in evidence} == {"ai_review"}
 
 
+def test_english_reanalysis_discards_old_checkpoints_and_replaces_worksheet_evidence(client, runtime):
+    runtime.settings.english_ai_mastery_enabled = True
+    with BytesIO() as output:
+        Image.new("RGB", (192, 192), "white").save(output, "PNG")
+        second_photo = output.getvalue()
+    files = [
+        ("files", ("one.png", english_demo_page(), "image/png")),
+        ("files", ("two.png", second_photo, "image/png")),
+    ]
+    response = client.post("/api/english/worksheets", files=files)
+    assert response.status_code == 202
+    created = response.json()
+    path = f"/api/english/records/{created['id']}"
+    action = f"{path}/reanalyze"
+    job_id = created["jobId"]
+    assert client.post(action, headers=_OTHER).status_code == 404
+    assert client.post(action).status_code == 409
+    legacy = english_demo(_photo())
+    apple, grammar, _, writing = legacy.items
+    correct = EnglishAnalyzedItem(
+        source=apple.source, problem=None, feedback=None, assessment=_assessment(apple.problem),
+    )
+    pending = EnglishAnalyzedItem(source=grammar.source, problem=None, feedback=None, review_timed_out=True)
+    initial = legacy.model_copy(update={"version": "2", "items": [correct, pending]})
+    second_result = initial.model_copy(update={"items": [writing]})
+    agent = Mock(invoke=Mock(side_effect=[initial, second_result]))
+    assert run_one(runtime, agent, job_id)
+    original = client.get(path).json()
+    assert original["canReanalyze"] and original["canRetryReview"]
+    assert original["items"][0]["outcome"] == "correct" and _evidence_count(runtime) == 1
+
+    assert client.post(f"{path}/retry").status_code == 202
+    agent.invoke.side_effect = AgentFailure("agent_no_result")
+    assert run_one(runtime, agent, job_id)
+    assert agent.invoke.call_args.args[0].review_items == [grammar.source]
+    runtime.settings.english_ai_mastery_enabled = False
+    practice = _practice(client, runtime)
+    assert client.post(f"/api/english/records/{practice['id']}/reanalyze").status_code == 409
+    with ThreadPoolExecutor(2) as pool:
+        assert sorted(pool.map(lambda _: client.post(action).status_code, range(2))) == [202, 409]
+    reuse = client.post("/api/english/worksheets", files=files).json()
+    assert (reuse["id"], reuse["jobId"], reuse["isReanalyzing"]) == (created["id"], job_id, True)
+    assert client.get(path).json()["items"] == original["items"]
+    agent.invoke.reset_mock()
+    agent.invoke.side_effect = [
+        initial.model_copy(update={"items": [pending]}), second_result.model_copy(update={"quality": "unclear"}),
+    ]
+    assert run_one(runtime, agent, job_id)
+    attempts = [call.args[0] for call in agent.invoke.call_args_list]
+    assert [r.image_base64 for r in attempts] == [
+        _photo().image_base64, b64encode(normalize_page(second_photo)).decode("ascii"),
+    ]
+    assert all(r.version == "2" and r.review_items is None for r in attempts)
+    failed = client.get(path).json()
+    assert failed["status"] == "failed" and failed["canReanalyze"] and not failed["canRetry"]
+    assert "已保留原报告" in failed["error"] and "超时" in failed["error"]
+    assert failed["items"] == original["items"] and _evidence_count(runtime) == 1
+
+    assert client.post(action).status_code == 202
+    incorrect = correct.model_copy(update={
+        "source": apple.source.model_copy(update={"answer": "pear"}),
+        "assessment": _assessment(apple.problem, outcome="incorrect"),
+    })
+    agent.invoke.reset_mock()
+    agent.invoke.side_effect = [
+        initial.model_copy(update={"items": [incorrect]}), AgentFailure("agent_timeout", retryable=True),
+    ]
+    assert run_one(runtime, agent, job_id)
+    assert [call.args[0] for call in agent.invoke.call_args_list] == attempts
+    checkpointed = client.get(path).json()
+    assert checkpointed["status"] == "queued" and checkpointed["isReanalyzing"]
+    assert checkpointed["items"] == original["items"] and _evidence_count(runtime) == 1
+    with runtime.db.transaction() as session:
+        session.get_one(Job, job_id).available_at = 0
+    agent.invoke.reset_mock(side_effect=True)
+    agent.invoke.return_value = second_result
+    assert run_one(runtime, agent, job_id)
+    agent.invoke.assert_called_once_with(attempts[1])
+    updated = client.get(path).json()
+    assert updated["status"] == "done" and not updated["isReanalyzing"] and updated["canReanalyze"]
+    assert [item["outcome"] for item in updated["items"]] == ["incorrect", "feedback"]
+    with runtime.db.session() as session:
+        evidence = session.scalars(select(Evidence)).one()
+        assert (evidence.source_id, evidence.english_id, evidence.score, evidence.occurred_at) == (
+            updated["items"][0]["id"], created["id"], 0, created["createdAt"],
+        )
+
+
 def test_english_ai_practice_uses_durable_grading_and_deduplicates_legacy_answers(client, runtime):
     old = _upload(client)
     assert run_one(runtime, DemoAgent(), old["jobId"])
@@ -547,11 +635,17 @@ def test_english_migration_preserves_existing_math_rows(tmp_path):
                 VALUES ('legacy-evidence', 'demo-a', 'rational-sum', 'legacy-problem', 2, 1, 'legacy')
             """))
             command.upgrade(config, "head")
-            assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0006"
-            assert conn.execute(text("SELECT submission_id, english_id, status FROM jobs")).one() == ("legacy", None, "done")
+            assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0007"
+            assert conn.execute(text("SELECT submission_id, english_id, status, reanalysis FROM jobs")).one() == (
+                "legacy", None, "done", 0,
+            )
             assert conn.execute(text("SELECT score, verification FROM mastery_evidence")).one() == (2, "rules")
             assert conn.execute(text("SELECT revision, ai_mastery FROM submissions")).one() == (1, 0)
             assert conn.execute(text("PRAGMA foreign_key_check")).all() == []
+            conn.execute(text("UPDATE jobs SET status = 'queued', reanalysis = true"))
+            with pytest.raises(RuntimeError, match="Finish queued or running"):
+                command.downgrade(config, "0006")
+            conn.execute(text("UPDATE jobs SET status = 'done', reanalysis = false"))
             conn.execute(text("UPDATE submissions SET ai_mastery = true WHERE id = 'legacy'"))
             with pytest.raises(RuntimeError, match="Preserve AI homework"):
                 command.downgrade(config, "0005")

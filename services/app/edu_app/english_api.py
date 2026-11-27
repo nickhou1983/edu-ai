@@ -14,7 +14,7 @@ from edu_agent.english_demo import english_demo_page
 from edu_app.assets import AssetNotFound, AssetUnavailable
 from edu_app.db import EnglishRecord, Job, new_id, now_ms
 from edu_app.english_jobs import english_evidence, has_pending_english_review
-from edu_app.jobs import JOB_ERRORS, RETRYABLE_FAILURES
+from edu_app.jobs import JOB_ERRORS, RETRYABLE_FAILURES, can_reanalyze, queue_reanalysis
 from edu_app.mastery import overview
 from edu_app.runtime import Runtime
 from edu_domain.contracts import (
@@ -44,14 +44,24 @@ class EnglishAnswer(Contract):
     answer: EnglishText
 
 
+def _can_reanalyze(record: EnglishRecord, job: Job) -> bool:
+    return record.kind == "worksheet" and "provenance" in record.document and can_reanalyze(job)
+
+
 def _info(record: EnglishRecord, job: Job) -> dict:
     pending_review = record.kind == "worksheet" and has_pending_english_review(record.document)
+    error = JOB_ERRORS.get(job.error, "任务未完成，请稍后重试。") if job.status == "failed" else None
+    if error and job.reanalysis:
+        error = f"重新分析未完成，已保留原报告。{error}"
     return {
         "id": record.id, "kind": record.kind, "skill": record.skill, "createdAt": record.created_at,
         "jobId": job.id, "status": job.status,
-        "error": JOB_ERRORS.get(job.error, "任务未完成，请稍后重试。") if job.status == "failed" else None,
-        "canRetry": job.status == "failed" and job.error in RETRYABLE_FAILURES and job.manual_retries == 0,
+        "error": error,
+        "canRetry": job.status == "failed" and job.error in RETRYABLE_FAILURES
+        and job.manual_retries == 0 and not job.reanalysis,
         "canRetryReview": job.status == "done" and pending_review and job.manual_retries == 0,
+        "canReanalyze": _can_reanalyze(record, job),
+        "isReanalyzing": job.reanalysis and job.status in ("queued", "running"),
     }
 
 
@@ -242,8 +252,9 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
     @router.post("/records/{record_id}/retry", status_code=202)
     def retry(record_id: UUID, owner: str = require_owner):
         with runtime.db.transaction() as session:
-            record, _ = _get(session, owner, record_id)
-            job = session.scalars(select(Job).where(Job.english_id == record.id).with_for_update()).one()
+            record, job = _get(session, owner, record_id)
+            session.refresh(job, with_for_update=True)
+            session.refresh(record, with_for_update=True)
             info = _info(record, job)
             if not info["canRetry"] and not info["canRetryReview"]:
                 raise HTTPException(409, "此任务不能再次处理，请检查后重新创建。")
@@ -252,6 +263,21 @@ def english_router(runtime: Runtime, owner_dependency) -> APIRouter:
             job.status, job.error, job.attempts = "queued", None, 0
             job.available_at, job.dispatched_at = now_ms(), None
             job.manual_retries += 1
+            return _info(record, job)
+
+    @router.post("/records/{record_id}/reanalyze", status_code=202)
+    def reanalyze_worksheet(record_id: UUID, owner: str = require_owner):
+        with runtime.db.transaction() as session:
+            record, job = _get(session, owner, record_id)
+            session.refresh(job, with_for_update=True)
+            session.refresh(record, with_for_update=True)
+            if not _can_reanalyze(record, job):
+                raise HTTPException(409, "此记录当前无法重新分析，请刷新查看最新状态。")
+            record.document = {
+                key: value for key, value in record.document.items()
+                if key not in ("pageCheckpoints", "pendingReviewRetry")
+            }
+            queue_reanalysis(job)
             return _info(record, job)
 
     @router.post("/records/{record_id}/items/{item_id}/answer")

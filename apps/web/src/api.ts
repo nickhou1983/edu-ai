@@ -18,6 +18,8 @@ export interface JobRecord {
 export interface Submission extends JobRecord {
   revision: number;
   canRetry: boolean;
+  canReanalyze: boolean;
+  isReanalyzing: boolean;
 }
 
 export interface Region {

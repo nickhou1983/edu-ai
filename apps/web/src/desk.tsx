@@ -99,6 +99,7 @@ export function Desk({ api, sample, sampleOnly, open, mastery }: {
             onChange={(event) => { add(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
         </div>
         <p className="muted small">上传后自动等比缩小，不改动本地原图。最多 6400 万像素，宽高均至少 120 像素。</p>
+        <p className="muted small">重复上传会打开原记录；需要重批时，可在报告里选择「重新分析整份作业」。</p>
         {!!files.length && (
           <ol className="file-list">
             {files.map((file, index) => <li key={`${file.name}-${index}`}>

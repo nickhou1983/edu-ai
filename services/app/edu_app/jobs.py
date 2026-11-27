@@ -77,12 +77,31 @@ class Work:
     practice_id: str | None
     english_id: str | None
     knowledge_id: str | None
+    reanalysis: bool
 
 
 @dataclass(frozen=True)
 class PracticeBatch:
     problems: list[Verified]
     versions: list[AgentVersion]
+
+
+def can_reanalyze(job: Job) -> bool:
+    return job.status in ("done", "failed")
+
+
+def queue_reanalysis(job: Job) -> None:
+    job.status, job.error, job.attempts = "queued", None, 0
+    job.available_at, job.dispatched_at = now_ms(), None
+    job.manual_retries = 0
+    job.reanalysis = True
+
+
+def _require_reanalysis_result(items: list[dict]) -> None:
+    if not items:
+        raise AgentFailure("agent_no_result")
+    if all(item.get("reason") == "review_timeout" for item in items):
+        raise AgentFailure("agent_timeout")
 
 
 def _eligible(timestamp: int):
@@ -106,14 +125,17 @@ def _claim(runtime: Runtime, job_id: str | None) -> Work | None:
         if job.attempts >= MAX_ATTEMPTS:
             job.status, job.error = "failed", "interrupted"
             job.lease_token = job.lease_until = None
-            if job.submission_id and job.manual_retries:
-                _clear_page_checkpoints(session, job.submission_id)
+            if job.submission_id and (job.manual_retries or job.reanalysis):
+                clear_page_checkpoints(session, job.submission_id)
             logger.warning("job_abandoned id=%s", job.id)
             return None
         job.status, job.lease_token, job.lease_until = "running", new_id(), timestamp + LEASE_MS
         job.attempts += 1
         job.error = None
-        return Work(job.id, job.lease_token, job.submission_id, job.practice_id, job.english_id, job.knowledge_id)
+        return Work(
+            job.id, job.lease_token, job.submission_id, job.practice_id, job.english_id, job.knowledge_id,
+            job.reanalysis,
+        )
 
 
 def _analyze(runtime: Runtime, agent: Agent, work: Work) -> dict:
@@ -354,7 +376,7 @@ def _lease(session: Session, work: Work) -> Job | None:
     )
 
 
-def _clear_page_checkpoints(session: Session, submission_id: str) -> None:
+def clear_page_checkpoints(session: Session, submission_id: str) -> None:
     session.execute(
         update(Page).where(Page.submission_id == submission_id, Page.analysis_checkpoint.is_not(None))
         .values(analysis_checkpoint=null())
@@ -377,9 +399,10 @@ def _fail(runtime: Runtime, work: Work, failure: AgentFailure, *, invalidate_che
             job.available_at = now_ms() + delay_ms
             job.dispatched_at = None
         if work.submission_id and (
-            invalidate_checkpoints or (not retry and (job.manual_retries or job.error not in RETRYABLE_FAILURES))
+            invalidate_checkpoints
+            or (not retry and (job.manual_retries or job.reanalysis or job.error not in RETRYABLE_FAILURES))
         ):
-            _clear_page_checkpoints(session, work.submission_id)
+            clear_page_checkpoints(session, work.submission_id)
         logger.warning("job_attempt_failed id=%s code=%s retry=%s attempt=%d retry_in_ms=%s",
                        job.id, failure.code, retry, job.attempts, delay_ms)
 
@@ -433,27 +456,32 @@ def _run_work(runtime: Runtime, agent: Agent, work: Work) -> bool:
 
         try:
             document = english_work(runtime, agent, record_id, renew=lambda: _renew(runtime, work), checkpoint=checkpoint)
+            if work.reanalysis:
+                retake_pages = set(document["retakePages"])
+                _require_reanalysis_result([item for item in document["items"] if item["page"] not in retake_pages])
             with runtime.db.transaction() as session:
                 job = _require_lease(session, work)
                 record = session.get_one(EnglishRecord, record_id, with_for_update=True)
                 if record.kind == "worksheet" and document.get("aiMastery") and not record.document.get("pendingReviewRetry"):
                     job.manual_retries = 0
-                save_english(session, record, document)
+                save_english(session, record, document, replace_worksheet_evidence=work.reanalysis)
                 _complete(job)
         except AgentFailure as exc:
             _fail(runtime, work, exc)
             return True
     elif work.submission_id:
         try:
-            if not _retry_pending_reviews(runtime, agent, work, work.submission_id):
+            if work.reanalysis or not _retry_pending_reviews(runtime, agent, work, work.submission_id):
                 report = _analyze(runtime, agent, work)
+                if work.reanalysis:
+                    _require_reanalysis_result(report["items"])
                 with runtime.db.transaction() as session:
                     job = _lease(session, work)
                     if not job:
                         return True
                     submission = session.get_one(Submission, work.submission_id, with_for_update=True)
                     save_report(session, submission, report)
-                    _clear_page_checkpoints(session, submission.id)
+                    clear_page_checkpoints(session, submission.id)
                     # The initial analysis and the finished report each allow one manual retry.
                     job.manual_retries = 0
                     _complete(job)
@@ -499,3 +527,4 @@ def _run_work(runtime: Runtime, agent: Agent, work: Work) -> bool:
 def _complete(job: Job):
     job.status, job.error = "done", None
     job.lease_token = job.lease_until = None
+    job.reanalysis = False

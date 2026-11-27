@@ -190,6 +190,7 @@ class Job(Base):
     lease_until: Mapped[int | None] = mapped_column(BigInteger)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     manual_retries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reanalysis: Mapped[bool] = mapped_column(server_default=false())
 
 
 class Evidence(Base):

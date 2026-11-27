@@ -2,6 +2,7 @@ from base64 import b64encode
 from collections.abc import Callable
 from itertools import batched
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from edu_agent.demo import DemoImageOnly
@@ -239,14 +240,17 @@ def _assessment_target(session: Session, record: EnglishRecord, document: dict) 
     raise AgentFailure("agent_invalid_result")
 
 
-def save_english(session: Session, record: EnglishRecord, document: dict):
+def save_english(session: Session, record: EnglishRecord, document: dict, *, replace_worksheet_evidence: bool = False):
     if record.kind == "worksheet":
-        counted = {item["id"] for item in record.document["items"] if item.get("counted")}
+        if replace_worksheet_evidence:
+            session.execute(delete(Evidence).where(Evidence.english_id == record.id))
+            counted = set()
+        else:
+            counted = {item["id"] for item in record.document["items"] if item.get("counted")}
+        original_date = document.get("aiMastery") or replace_worksheet_evidence
         for item in document["items"]:
             if item["id"] not in counted:
-                english_evidence(
-                    session, record, item, occurred_at=record.created_at if document.get("aiMastery") else None,
-                )
+                english_evidence(session, record, item, occurred_at=record.created_at if original_date else None)
     elif record.kind == "assessment":
         parent, item = _assessment_target(session, record, document)
         english_evidence(session, parent, {**item, **document["result"]}, occurred_at=record.created_at)

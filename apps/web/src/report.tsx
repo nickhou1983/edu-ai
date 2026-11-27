@@ -4,7 +4,7 @@ import {
   describeError, jsonBody, outcomeNames, pending, type Api, type GradedItem, type Outcome,
   type Report, type SubmissionDetail,
 } from "./api";
-import { dateText, Empty, Icon, Problem, Progress, useRemote } from "./ui";
+import { dateText, Empty, Icon, Problem, Progress, ReanalysisAction, useRemote } from "./ui";
 
 const reasonNames: Record<string, string> = {
   ambiguous_image: "题图不完整或识别有歧义", incomplete_question: "缺少完整题目",
@@ -88,6 +88,8 @@ function Transcription({ api, id, item, revision, reload }: {
   </form>;
 }
 
+type AnalysisAction = "retry" | "reanalyze";
+
 export function ReportView({ api, id, initialItem, back, practice }: {
   api: Api; id: string; initialItem: string | null; back: () => void; practice: (skill: string) => void;
 }) {
@@ -95,11 +97,12 @@ export function ReportView({ api, id, initialItem, back, practice }: {
   const [selected, setSelected] = useState<string | null>(initialItem);
   const [pageOverride, setPageOverride] = useState<number | null>(null);
   const [filter, setFilter] = useState<Outcome | null>(null);
-  const [retrying, setRetrying] = useState(false);
-  const [queuedFrom, setQueuedFrom] = useState<SubmissionDetail | null>(null);
+  const [submitting, setSubmitting] = useState<AnalysisAction | null>(null);
+  const [queued, setQueued] = useState<{ from: SubmissionDetail | null; action: AnalysisAction } | null>(null);
   const [retryError, setRetryError] = useState("");
   const data = report.data;
-  const retryBusy = retrying || (data !== null && queuedFrom === data);
+  const activeAction = submitting ?? (data && queued?.from === data ? queued.action : null);
+  const retryBusy = activeAction !== null;
   const rows: Report["items"] = data?.report?.items ?? [];
   const pendingReviews = rows.filter((row) => row.reason === "review_timeout").length;
   const visibleRows = filter ? rows.filter((row) => row.outcome === filter) : rows;
@@ -108,17 +111,17 @@ export function ReportView({ api, id, initialItem, back, practice }: {
   const pointIndex = item?.masteryPointId ? item.knowledgeIds?.indexOf(item.masteryPointId) ?? -1 : -1;
   const masteryPoint = item?.knowledgeTitles?.[pointIndex];
 
-  async function retry() {
-    setRetrying(true);
+  async function queueAnalysis(action: AnalysisAction) {
+    setSubmitting(action);
     setRetryError("");
     try {
-      await api.json(`/submissions/${id}/retry`, { method: "POST" });
-      setQueuedFrom(data);
+      await api.json(`/submissions/${id}/${action}`, { method: "POST" });
+      setQueued({ from: data, action });
       report.reload();
     } catch (reason) {
       setRetryError(describeError(reason));
     } finally {
-      setRetrying(false);
+      setSubmitting(null);
     }
   }
 
@@ -131,14 +134,17 @@ export function ReportView({ api, id, initialItem, back, practice }: {
     </div>
     {report.error && <Problem retry={report.reload}>{report.error}</Problem>}
     {!data && !report.error && <p role="status">正在读取作业…</p>}
-    {data && pending(data) && <Progress record={data} type={data.report ? "review" : "report"} />}
+    {data && pending(data) && <Progress record={data}
+      type={data.isReanalyzing ? "reanalyze" : data.report ? "review" : "report"} />}
     {data?.status === "failed" && <>
       <Problem>{data.error ?? "未完成分析，请重新上传或稍后重试。"}</Problem>
-      {data.canRetry && <button className="button secondary end-link" onClick={() => void retry()} disabled={retryBusy}>
+      {data.canRetry && <button className="button secondary end-link" onClick={() => void queueAnalysis("retry")} disabled={retryBusy}>
         重新分析
       </button>}
     </>}
     {retryError && <Problem>{retryError}</Problem>}
+    {data?.canReanalyze && <ReanalysisAction busy={retryBusy} start={() => void queueAnalysis("reanalyze")}
+      hasCorrections={rows.some((row) => row.corrected)} />}
     {data?.report && <>
       <div className="grade-summary" aria-label="按批改结果筛选">
         {(Object.keys(outcomeNames) as Outcome[]).map((outcome) => <button key={outcome}
@@ -156,7 +162,7 @@ export function ReportView({ api, id, initialItem, back, practice }: {
       </div>}
       {pendingReviews > 0 && <div className="notice advisory">
         <span role="status">{pendingReviews} 道题因独立解题或复核超时标为待复核，未判分；已核验的题目不受影响。</span>
-        {data.canRetry && <button className="button secondary" onClick={() => void retry()} disabled={retryBusy}>
+        {data.canRetry && <button className="button secondary" onClick={() => void queueAnalysis("retry")} disabled={retryBusy}>
           重试待复核
         </button>}
       </div>}
@@ -212,8 +218,9 @@ export function ReportView({ api, id, initialItem, back, practice }: {
             </p>}
             {item.corrected && <p className="small muted">此题为转写核对结果，未计入掌握度。</p>}
             <div className="actions">
-              {item.canCorrect && <Transcription key={`${item.id}-${data.revision}`} api={api}
-                id={id} item={item} revision={data.revision} reload={report.reload} />}
+              {item.canCorrect && !data.isReanalyzing && activeAction !== "reanalyze" &&
+                <Transcription key={`${item.id}-${data.revision}`} api={api}
+                  id={id} item={item} revision={data.revision} reload={report.reload} />}
               {item.skill && <button className="text-button" onClick={() => practice(item.skill!)}>
                 练同类题 <Icon name="arrow" size={15} />
               </button>}

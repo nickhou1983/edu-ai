@@ -39,6 +39,9 @@ test("checks homework, traces mastery evidence and reflects independent practice
   await page.getByLabel("按原图写出你的作答").fill("8");
   await page.getByRole("button", { name: "核对结果" }).click();
   await expect(page.getByText("此题为转写核对结果，未计入掌握度。")).toBeVisible();
+  await page.getByRole("button", { name: "重新分析整份作业", exact: true }).click();
+  await expect(page.getByText("手动核对的转写不会带入新报告。", { exact: false })).toBeVisible();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
 
   await nav.getByRole("button", { name: "知识点地图" }).click();
   await expect(skill.getByText("有效作答 2 道")).toBeVisible();
@@ -72,10 +75,11 @@ test("checks homework, traces mastery evidence and reflects independent practice
   expect(errors).toEqual([]);
 });
 
-test("retries pending reviews without hiding the report or uploading again", async ({ page }) => {
+test("retries pending reviews or reanalyzes the full worksheet without hiding the report", async ({ page }) => {
   const id = "00000000-0000-4000-8000-000000000001";
   let detail: SubmissionDetail = {
     id, jobId: id, createdAt: Date.now(), pages: [1], revision: 0, canRetry: true,
+    canReanalyze: false, isReanalyzing: false,
     status: "failed", error: "分析超时。原图仍在，无需重新上传。", report: null,
   };
   let retries = 0;
@@ -94,7 +98,7 @@ test("retries pending reviews without hiding the report or uploading again", asy
   await expect(page.getByRole("button", { name: "重新分析" })).toBeVisible();
 
   detail = {
-    ...detail, status: "done", error: null, canRetry: true, revision: 1,
+    ...detail, status: "done", error: null, canRetry: true, canReanalyze: true, revision: 1,
     report: {
       items: [{
         id: `${id}-item`, page: 1, label: "1", region: { left: 0, top: 0, right: 1000, bottom: 1000 },
@@ -122,7 +126,7 @@ test("retries pending reviews without hiding the report or uploading again", asy
   await expect(page.getByText("正在复核超时的题目")).toBeVisible();
   const report = detail.report!;
   detail = {
-    ...detail, status: "done", revision: 2,
+    ...detail, status: "done", revision: 2, canReanalyze: true,
     report: {
       ...report,
       items: [{
@@ -138,6 +142,37 @@ test("retries pending reviews without hiding the report or uploading again", asy
   await expect(page.getByText("正在复核超时的题目")).toHaveCount(0);
   await expect(retry).toHaveCount(0);
   expect(retries).toBe(1);
+
+  let reanalyses = 0;
+  await page.route(`**/api/submissions/${id}/reanalyze`, (route) => {
+    expect(route.request().method()).toBe("POST");
+    reanalyses += 1;
+    detail = { ...detail, status: "queued", canReanalyze: false, isReanalyzing: true };
+    return route.fulfill({ json: detail, status: 202 });
+  });
+  const reanalyze = page.getByRole("button", { name: "重新分析整份作业", exact: true });
+  const confirm = page.getByRole("button", { name: "开始重新分析" });
+  await reanalyze.click();
+  await expect(page.getByText(/不会新增作业记录/)).toBeVisible();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(confirm).toBeHidden();
+  await expect(reanalyze).toBeFocused();
+  expect(reanalyses).toBe(0);
+  await reanalyze.click();
+  await confirm.click();
+  await expect(page.getByRole("status").filter({ hasText: "重新分析正在排队" })).toBeVisible();
+  await expect(reanalyze).toBeHidden();
+  await expect(page.getByText("第 1 题 · 正确")).toBeVisible();
+  await expect(page.getByRole("img", { name: "作业第 1 页原图" })).toBeVisible();
+
+  const updated = detail.report!;
+  detail = {
+    ...detail, status: "done", revision: 3, canReanalyze: true, isReanalyzing: false,
+    report: { ...updated, items: [{ ...updated.items[0], stem: "重新识别的合成题目" }] },
+  };
+  await expect(page.getByRole("button", { name: /重新识别的合成题目 正确/ })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`view=report&id=${id}`));
+  expect(reanalyses).toBe(1);
 });
 
 test("shows mastery sources and opens the corresponding reference practice", async ({ page }) => {

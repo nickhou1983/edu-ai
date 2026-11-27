@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   describeError, jsonBody, masteryNames, outcomeNames, pending, type Api, type JobRecord, type Mastery, type Outcome, type Status,
 } from "./api";
-import { dateText, Empty, Icon, Problem, statusText, StudyNotebook, useRemote } from "./ui";
+import { dateText, Empty, Icon, Problem, Progress, ReanalysisAction, statusText, StudyNotebook, useRemote } from "./ui";
 
 type EnglishSkill = Omit<Mastery, "status"> & { status: Mastery["status"] | "feedback_only"; hint: string };
 type Feedback = { strengths: string[]; improvements: string[]; suggested_response: string };
@@ -17,6 +17,7 @@ type EnglishItem = {
 };
 type EnglishRecord = JobRecord & {
   kind: "worksheet" | "practice"; skill: string | null; canRetry: boolean; canRetryReview?: boolean;
+  canReanalyze: boolean; isReanalyzing: boolean;
 };
 type EnglishDetail = EnglishRecord & {
   pages: number[]; items: EnglishItem[]; retakePages: number[];
@@ -106,6 +107,7 @@ export function EnglishWorkspace({ api, sample, sampleOnly, id, focused, open, f
         <h2 id="english-upload">英语作业与试卷</h2>
         <p className="muted">上传 1–4 页截图，检查词汇、语法、阅读作答，查看写作的文字建议。每张不超过 8 MB。</p>
         <p className="muted small">上传后自动等比缩小，不改动本地原图。最多 6400 万像素，宽高均至少 120 像素。</p>
+        <p className="muted small">重复上传会打开原记录；需要重批时，可在报告里选择「重新分析整份作业」。</p>
         <input id="english-files" type="file" accept="image/png,image/jpeg,image/webp" multiple
           aria-label="选择英语作业图片" onChange={(event) => {
             setFiles(Array.from(event.target.files ?? [])); setError("");
@@ -184,14 +186,19 @@ export function EnglishWorkspace({ api, sample, sampleOnly, id, focused, open, f
 function EnglishRecordView({ api, id, back }: { api: Api; id: string; back: () => void }) {
   const remote = useRemote<EnglishDetail>(api, `/english/records/${id}`, pollDetail);
   const [error, setError] = useState("");
-  const [retrying, setRetrying] = useState(false);
-  async function retry(recordId = id) {
-    setError(""); setRetrying(true);
-    try { await api.json(`/english/records/${recordId}/retry`, { method: "POST" }); remote.reload(); }
-    catch (reason) { setError(describeError(reason)); }
-    finally { setRetrying(false); }
-  }
+  const [submitting, setSubmitting] = useState(false);
+  const [queuedFrom, setQueuedFrom] = useState<EnglishDetail | null>(null);
   const record = remote.data;
+  const retrying = submitting || (record !== null && queuedFrom === record);
+  async function queueAnalysis(action: "retry" | "reanalyze", recordId = id) {
+    setError(""); setSubmitting(true);
+    try {
+      await api.json(`/english/records/${recordId}/${action}`, { method: "POST" });
+      setQueuedFrom(record);
+      remote.reload();
+    } catch (reason) { setError(describeError(reason)); }
+    finally { setSubmitting(false); }
+  }
   return <div className="english-workspace">
     <div className="page-title">
       <button className="text-button back" onClick={back}>← 返回英语学习</button>
@@ -202,17 +209,19 @@ function EnglishRecordView({ api, id, back }: { api: Api; id: string; back: () =
     {remote.error && <Problem retry={remote.reload}>{remote.error}</Problem>}
     {error && <Problem>{error}</Problem>}
     {!record && !remote.error && <p role="status">正在读取英语记录…</p>}
-    {record && pending(record) && <div className="notice progress" role="status">
-      {record.status === "queued" ? "英语任务正在排队" : "正在处理英语学习内容"}；可以稍后从记录中继续查看。
-    </div>}
+    {record && pending(record) && (record.isReanalyzing ? <Progress record={record} type="reanalyze" />
+      : <div className="notice progress" role="status">
+        {record.status === "queued" ? "英语任务正在排队" : "正在处理英语学习内容"}；可以稍后从记录中继续查看。
+      </div>)}
     {record?.status === "failed" && <>
       <Problem>{record.error ?? "英语任务未完成。"}</Problem>
-      {record.canRetry && <button className="button secondary" disabled={retrying} onClick={() => void retry()}>重新处理英语任务</button>}
+      {record.canRetry && <button className="button secondary" disabled={retrying} onClick={() => void queueAnalysis("retry")}>重新处理英语任务</button>}
     </>}
     {record?.canRetryReview && <div className="notice advisory">
       部分题目复核超时。只重试待复核题，已完成的结果会保留。
-      {" "}<button className="button secondary" disabled={retrying} onClick={() => void retry()}>重试待复核题</button>
+      {" "}<button className="button secondary" disabled={retrying} onClick={() => void queueAnalysis("retry")}>重试待复核题</button>
     </div>}
+    {record?.canReanalyze && <ReanalysisAction busy={retrying} start={() => void queueAnalysis("reanalyze")} />}
     {!!record?.retakePages.length && <p className="notice advisory">第 {record.retakePages.join("、")} 页未能清晰识别；请裁掉无关内容，重新拍摄上传，未据此计入掌握度。</p>}
     {record && <div className={record.kind === "worksheet" ? "english-report-grid" : ""}>
       {record.pages.length > 0 && <section className="panel"><h2>核对原图</h2>
@@ -221,7 +230,7 @@ function EnglishRecordView({ api, id, back }: { api: Api; id: string; back: () =
       <section className="english-items" aria-label="英语题目">
         {record.status === "done" && record.items.length === 0 && <Empty title="没有可展示的题目">请检查图片是否完整、清晰。</Empty>}
         {record.items.map((item, index) => <EnglishItemCard key={item.id} api={api} record={record} item={item}
-          index={index} reload={remote.reload} retry={(feedbackId) => void retry(feedbackId)} retrying={retrying} />)}
+          index={index} reload={remote.reload} retry={(feedbackId) => void queueAnalysis("retry", feedbackId)} retrying={retrying} />)}
       </section>
     </div>}
     {record?.provenance.some((version) => version.model === "synthetic-demo") &&

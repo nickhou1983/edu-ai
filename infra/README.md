@@ -136,7 +136,7 @@ az containerapp job execution show -g "$RG" -n "$MIGRATION" \
   --job-execution-name "$MIGRATION_EXECUTION" --query properties.status -o tsv
 ```
 
-迁移 Job 在私网内创建数据库、映射应用身份、执行 Alembic 并授予读写权限。重复**查询同一次执行**，直到 `Succeeded`；不要为查询状态再次启动。失败时停止发布，按[排障](#部署排障)处理。当前代码的迁移版本是 `0006`。迁移成功、登录配置 `verify` 通过后，按顺序预览和发布 `worker`、`api`：
+迁移 Job 在私网内创建数据库、映射应用身份、执行 Alembic 并授予读写权限。重复**查询同一次执行**，直到 `Succeeded`；不要为查询状态再次启动。失败时停止发布，按[排障](#部署排障)处理。当前代码的迁移版本是 `0007`。迁移成功、登录配置 `verify` 通过后，按顺序预览和发布 `worker`、`api`：
 
 ```bash
 runtime_stage what-if worker
@@ -159,6 +159,8 @@ PROJECT_ENDPOINT="https://$(jq -er .foundry "$SETTINGS").services.ai.azure.com/a
 ```
 
 按[构建与注册](#3-构建镜像发布-agent)准备不可变镜像；只在迁移有变化时运行 `phase=migrate` 和迁移 Job。使用 Bicep 更新 API 时，把上述 `MATH_AI`、`ENGLISH_AI`、`MATH_RETRY` 设成读回的线上值（或本次明确批准的目标值），不要沿用首次部署的默认值。
+
+启用整份作业重新分析时，先运行迁移 `0007`，再升级 Worker，最后升级 API 和前端，不需要改变判分开关或发布 Agent。回退到不支持该功能的 Worker 前，先停止接受新的整份重分析请求，并等待正在排队或运行的重分析完成。
 
 通常先发布可服务旧 Worker 的新版 Agent，再升级 Worker，最后升级 API 并打开新功能。切换前检查协议和报告的双向兼容性：若旧 API 不能读取新 Worker 写出的报告，先部署能读取旧报告的新 API，并保持新功能关闭。等待旧任务完成或确认它们能由新版继续处理；不让旧 Worker 消费它不理解的新任务。发布记录中的特殊次序仅适用于对应版本。
 

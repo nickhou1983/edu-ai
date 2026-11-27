@@ -1,3 +1,4 @@
+from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from unittest.mock import Mock
@@ -563,6 +564,66 @@ def test_multipage_retry_resumes_from_checkpoint_and_cleans_up(client, runtime, 
     assert {item["page"] for item in detail["report"]["items"]} == {1}
     with runtime.db.session() as session:
         assert all(page.analysis_checkpoint is None for page in session.query(Page).all())
+
+
+def test_math_reanalysis_reuses_original_images_and_replaces_evidence_only_on_success(client, runtime):
+    photo = demo_page()
+    submission = _upload(client, photo)
+    job_id = submission["jobId"]
+    path = f"/api/submissions/{submission['id']}"
+    action = f"{path}/reanalyze"
+    assert client.post(action, headers=_OTHER_STUDENT).status_code == 404
+    assert client.post(action).status_code == 409
+    assert run_one(runtime, DemoAgent(), job_id)
+    old = client.get(path).json()
+    original_evidence = _skill(client)["evidence"]
+    result = demo_analysis()
+    with runtime.db.transaction() as session:
+        session.get(Page, (submission["id"], 1)).analysis_checkpoint = result.model_dump(mode="json")
+    runtime.settings.math_ai_mastery_enabled = True
+
+    with ThreadPoolExecutor(2) as pool:
+        assert sorted(pool.map(lambda _: client.post(action).status_code, range(2))) == [202, 409]
+    duplicate = _upload(client, photo)
+    assert (duplicate["id"], duplicate["jobId"], duplicate["isReanalyzing"]) == (submission["id"], job_id, True)
+    assert client.get(path).json()["report"] == old["report"]
+    original_item = old["report"]["items"][1]
+    assert client.patch(f"{path}/items/{original_item['id']}/transcription", json={
+        "answer": "8", "revision": old["revision"],
+    }).status_code == 409
+
+    def unreadable(request):
+        assert request.review_items is None and request.ai_only is False
+        assert request.image_base64 == b64encode(normalize_page(photo)).decode("ascii")
+        assert client.post(action).status_code == 409
+        assert client.get(path).json()["report"] == old["report"]
+        assert _skill(client)["evidence"] == original_evidence
+        return result.model_copy(update={"quality": "unclear", "items": []})
+
+    agent = Mock(invoke=Mock(side_effect=unreadable))
+    assert run_one(runtime, agent, job_id)
+    agent.invoke.assert_called_once()
+    failed = client.get(path).json()
+    assert failed["status"] == "failed" and failed["canReanalyze"] and not failed["canRetry"]
+    assert "已保留原报告" in failed["error"]
+    assert (failed["report"], failed["revision"]) == (old["report"], old["revision"])
+    assert _skill(client)["evidence"] == original_evidence
+
+    assert client.post(action).status_code == 202
+    agent.invoke.reset_mock(side_effect=True)
+    items = result.items.copy()
+    items[1] = items[1].model_copy(update={"source": items[1].source.model_copy(update={"answer": "8"})})
+    agent.invoke.return_value = result.model_copy(update={"items": items})
+    assert run_one(runtime, agent, job_id)
+    current = client.get(path).json()
+    assert current["status"] == "done" and current["canReanalyze"] and not current["isReanalyzing"]
+    assert current["revision"] == old["revision"] + 1
+    assert current["report"]["items"][1]["outcome"] == "correct"
+    assert client.get("/api/submissions").json() == [_upload(client, photo)]
+    assert (_skill(client)["sampleCount"], _skill(client)["percent"]) == (3, 100)
+    with runtime.db.session() as session:
+        assert {entry.occurred_at for entry in session.query(Evidence).all()} == {submission["createdAt"]}
+        assert session.get(Report, (submission["id"], old["revision"])) is not None
 
 
 def test_review_retry_keeps_progress_and_concurrent_corrections(client, runtime, open_math_item, monkeypatch):

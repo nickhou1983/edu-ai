@@ -20,7 +20,13 @@ from edu_app.assets import AssetNotFound, AssetUnavailable
 from edu_app.auth import Auth
 from edu_app.db import Evidence, Job, Page, Practice, PracticeItem, Report, Submission, new_id, now_ms
 from edu_app.english_api import english_router
-from edu_app.jobs import JOB_ERRORS, RETRYABLE_FAILURES
+from edu_app.jobs import (
+    JOB_ERRORS,
+    RETRYABLE_FAILURES,
+    can_reanalyze,
+    clear_page_checkpoints,
+    queue_reanalysis,
+)
 from edu_app.mastery import overview
 from edu_app.queue import dispatch_loop
 from edu_app.reports import ReportItem, is_pending_review, public_report, save_report
@@ -90,7 +96,7 @@ def _job_info(job: Job) -> dict:
 
 
 def _can_retry(submission: Submission, job: Job, report: Report | None) -> bool:
-    if job.manual_retries:
+    if job.manual_retries or job.reanalysis:
         return False
     if not submission.revision:
         return job.status == "failed" and job.error in RETRYABLE_FAILURES
@@ -102,7 +108,9 @@ def _can_retry(submission: Submission, job: Job, report: Report | None) -> bool:
 def _submission_info(submission: Submission, job: Job, report: Report | None = None) -> dict:
     info = _job_info(job)
     if job.status == "failed":
-        if submission.revision:
+        if job.reanalysis:
+            info["error"] = f"重新分析未完成，已保留原报告。{info['error']}"
+        elif submission.revision:
             if job.error == "agent_timeout":
                 info["error"] = "复核超时，已保留现有报告。"
             else:
@@ -120,6 +128,8 @@ def _submission_info(submission: Submission, job: Job, report: Report | None = N
         "createdAt": submission.created_at,
         "revision": submission.revision,
         "canRetry": _can_retry(submission, job, report),
+        "canReanalyze": bool(submission.revision) and can_reanalyze(job),
+        "isReanalyzing": job.reanalysis and job.status in ("queued", "running"),
         **info,
     }
 
@@ -236,7 +246,7 @@ def build_app(runtime: Runtime) -> FastAPI:
         from edu_app.db import KnowledgeActivity, KnowledgePoint
 
         with runtime.db.session() as session:
-            session.execute(select(Job.id, Job.knowledge_id).limit(0))
+            session.execute(select(Job.id, Job.knowledge_id, Job.reanalysis).limit(0))
             session.execute(select(KnowledgePoint.id).limit(0))
             session.execute(select(KnowledgeActivity.id).limit(0))
             session.execute(select(Submission.ai_mastery).limit(0))
@@ -387,6 +397,18 @@ def build_app(runtime: Runtime) -> FastAPI:
             job.manual_retries += 1
             return _submission_info(submission, job)
 
+    @app.post("/api/submissions/{submission_id}/reanalyze", status_code=202)
+    def reanalyze_submission(submission_id: UUID, owner: str = require_owner):
+        with runtime.db.transaction() as session:
+            submission = _submission(session, owner, submission_id)
+            job = session.scalars(select(Job).where(Job.submission_id == submission.id).with_for_update()).one()
+            session.refresh(submission, with_for_update=True)
+            if not submission.revision or not can_reanalyze(job):
+                raise HTTPException(409, "此作业当前无法重新分析，请刷新查看最新状态。")
+            clear_page_checkpoints(session, submission.id)
+            queue_reanalysis(job)
+            return _submission_info(submission, job)
+
     @app.patch("/api/submissions/{submission_id}/items/{item_id}/transcription")
     def correct_transcription(
         submission_id: UUID, item_id: UUID, body: Correction, owner: str = require_owner
@@ -395,6 +417,9 @@ def build_app(runtime: Runtime) -> FastAPI:
             submission = _submission(session, owner, submission_id, lock=True)
             if body.revision != submission.revision:
                 raise HTTPException(409, "报告已更新，请刷新后再核对。")
+            job = session.scalars(select(Job).where(Job.submission_id == submission.id)).one()
+            if job.reanalysis and job.status in ("queued", "running"):
+                raise HTTPException(409, "作业正在重新分析，请等新报告完成后再核对。")
             report = session.get_one(Report, (submission.id, submission.revision))
             for index, value in enumerate(report.document["items"]):
                 if value["id"] != str(item_id):

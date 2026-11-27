@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { describeError, type Api, type JobRecord } from "./api";
 
@@ -40,13 +40,45 @@ export function Empty({ title, children }: { title: string; children: ReactNode 
   </div>;
 }
 
-export function Progress({ record, type }: { record: JobRecord; type: "report" | "practice" | "review" }) {
-  const working = { report: "正在识别并核验题目", practice: "正在生成并核验练习", review: "正在复核超时的题目" };
+export function Progress({ record, type }: { record: JobRecord; type: "report" | "practice" | "review" | "reanalyze" }) {
+  const working = {
+    report: "正在识别并核验题目", practice: "正在生成并核验练习",
+    review: "正在复核超时的题目", reanalyze: "正在重新分析整份作业",
+  };
   return <div className="notice progress" role="status">
     <span className="working-dot" aria-hidden="true" />
-    <div><strong>{record.status === "queued" ? "正在排队" : working[type]}</strong>
-      <p>可以先离开这个页面，稍后从记录中继续查看。</p></div>
+    <div><strong>{record.status === "queued" ? (type === "reanalyze" ? "重新分析正在排队" : "正在排队") : working[type]}</strong>
+      <p>{type === "reanalyze" ? "新结果完成前仍可查看原报告。" : "可以先离开这个页面，稍后从记录中继续查看。"}</p>
+    </div>
   </div>;
+}
+
+export function ReanalysisAction({ busy, start, hasCorrections = false }: {
+  busy: boolean; start: () => void; hasCorrections?: boolean;
+}) {
+  const confirmationId = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [confirming, setConfirming] = useState(false);
+  return <>
+    <div className="actions">
+      <button className="button secondary" ref={trigger} disabled={busy} aria-expanded={confirming}
+        aria-controls={confirmationId} onClick={() => setConfirming((open) => !open)}>重新分析整份作业</button>
+    </div>
+    <div className="callout" id={confirmationId} hidden={!confirming}>
+      <p>会从已保存的原图重新识别并批改，沿用原来的判分模式。成功后更新这份报告和掌握度，不会新增作业记录。
+        {hasCorrections && "手动核对的转写不会带入新报告。"}</p>
+      <div className="actions">
+        <button className="button primary" disabled={busy} onClick={() => {
+          setConfirming(false);
+          start();
+        }}>开始重新分析</button>
+        <button className="button secondary" onClick={() => {
+          setConfirming(false);
+          trigger.current?.focus();
+        }}>取消</button>
+      </div>
+    </div>
+  </>;
 }
 
 export function Icon({ name, size = 20 }: {
